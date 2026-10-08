@@ -59,14 +59,25 @@ app.get('/scrape', async (req, res) => {
             .filter(href => href.includes('/videos/') || href.includes('/watch/') || href.includes('/reel/'));
         });
 
-        console.log(`Trovati ${videoLinks.length} video per ${squadra.facebook_page_url}`);
+ console.log(`Trovati ${videoLinks.length} video per ${squadra.facebook_page_url}`);
 
         // Salva i video trovati in Supabase
         for (const url of videoLinks) {
-          await supabase.from('highlights_partite').upsert({
-            id_squadra: squadra.id_squadra,
-            video_url: url
-          }, { onConflict: 'video_url' });
+          const { data, error } = await supabase
+            .from('highlights_partite')
+            .upsert(
+              {
+                id_squadra_autore: squadra.id_squadra,
+                video_url: url
+              },
+              { onConflict: 'video_url' }
+            );
+
+          if (error) {
+            console.error(`❌ Errore salvataggio Supabase per ${url}:`, error.message, error.details);
+          } else {
+            console.log(`✅ Inserito/Aggiornato con successo: ${url}`);
+          }
         }
 
       } catch (e) {
