@@ -8,7 +8,7 @@ app.use(express.json());
 
 // Inserisci qui i tuoi dati di Supabase
 const SUPABASE_URL = 'https://amhqonfunjmhakhbpktx.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFtaHFvbmZ1bmptaGFraGJwa3R4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTYwMjg0NTYsImV4cCI6MjA3MTYwNDQ1Nn0.ZqHruCqwfM4iQUg5303DrFKR6WtuxbaS17L2FOEgX4o';
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: false },
   realtime: { transport: WebSocket }
