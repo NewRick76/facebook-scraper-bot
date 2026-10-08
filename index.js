@@ -25,10 +25,16 @@ app.get('/scrape', async (req, res) => {
       return;
     }
 
-    // 2. Avvia il browser headless
+    // 2. Avvia il browser headless configurato per server cloud
     const browser = await puppeteer.launch({
       headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--single-process',
+        '--no-zygote'
+      ]
     });
 
     const page = await browser.newPage();
