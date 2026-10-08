@@ -25,15 +25,18 @@ app.get('/scrape', async (req, res) => {
       return;
     }
 
-    // 2. Avvia il browser headless configurato per server cloud
+    // 2. Avvia il browser headless configurato per server Linux/Render
     const browser = await puppeteer.launch({
-      headless: 'new',
+      headless: true,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
         '--single-process',
-        '--no-zygote'
+        '--disable-gpu'
       ]
     });
 
