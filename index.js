@@ -41,38 +41,81 @@ const browser = await puppeteer.launch({
     '--disable-gpu'
   ]
 });
+// Sostituisci dalla riga 44 alla riga 75 con questo blocco:
+
+  for (const squadra of squadre) {
+    if (!squadra.facebook_page_url) continue;
+
+    console.log(`Scansione per: ${squadra.facebook_page_url}`);
     const page = await browser.newPage();
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    for (const squadra of squadre) {
-      if (!squadra.facebook_page_url) continue;
+    try {
+      // Blocca risorse pesanti per risparmiare memoria RAM su Render
+      await page.setRequestInterception(true);
+      page.on('request', (req) => {
+        if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
+          req.abort();
+        } else {
+          req.continue();
+        }
+      });
 
-      console.log(`Scansione per: ${squadra.facebook_page_url}`);
-      
-      try {
-        await page.goto(squadra.facebook_page_url, { waitUntil: 'networkidle2', timeout: 30000 });
+      // Naviga direttamente nella sezione /videos/ della pagina
+      const targetUrl = squadra.facebook_page_url.endsWith('/')
+        ? `${squadra.facebook_page_url}videos/`
+        : `${squadra.facebook_page_url}/videos/`;
 
-        // Estrai i link dei video / post
-        const videoLinks = await page.evaluate(() => {
-          const links = Array.from(document.querySelectorAll('a'));
-          return links
-            .map(a => a.href)
-            .filter(href => href.includes('/videos/') || href.includes('/watch/') || href.includes('/reel/'));
-        });
+      await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
- console.log(`Trovati ${videoLinks.length} video per ${squadra.facebook_page_url}`);
+      // Esegui 7 scroll verso il basso per caricare anche i video di fine settembre
+      for (let i = 0; i < 7; i++) {
+        await page.evaluate(() => window.scrollBy(0, 1200));
+        await new Promise(r => setTimeout(r, 1200));
+      }
 
-        // Salva i video trovati in Supabase
-        for (const url of videoLinks) {
-          const { data, error } = await supabase
-            .from('highlights_partite')
-            .upsert(
-              {
-                id_squadra_autore: squadra.id_squadra,
-                video_url: url
-              },
-              { onConflict: 'video_url' }
-            );
+      // Estrai ed escludi URL generici
+      const videoLinks = await page.evaluate(() => {
+        const links = Array.from(document.querySelectorAll('a'));
+        return links
+          .map(a => a.href)
+          .filter(href => {
+            const isVideo = href.includes('/videos/') || href.includes('/watch/?v=') || href.includes('/reel/');
+            const isNotGeneric = href !== 'https://www.facebook.com/watch/' && 
+                                 !href.endsWith('/videos/') && 
+                                 !href.endsWith('/videos');
+            return isVideo && isNotGeneric;
+          });
+      });
+
+      const uniqueVideoLinks = [...new Set(videoLinks)];
+      console.log(`Trovati ${uniqueVideoLinks.length} video per ${squadra.facebook_page_url}`);
+
+      // Salva i video in Supabase
+      for (const url of uniqueVideoLinks) {
+        const { data, error } = await supabase
+          .from('highlights_partite')
+          .upsert(
+            {
+              id_squadra_autore: squadra.id_squadra,
+              video_url: url
+            },
+            { onConflict: 'video_url' }
+          );
+
+        if (error) {
+          console.error(`❌ Errore salvataggio Supabase per ${url}:`, error.message);
+        } else {
+          console.log(`✅ Inserito con successo: ${url}`);
+        }
+      }
+
+    } catch (e) {
+      console.error(`Errore durante lo scraping di ${squadra.facebook_page_url}:`, e.message);
+    } finally {
+      // Chiude la singola scheda per liberare subito la RAM
+      await page.close();
+    }
+  }
 
           if (error) {
             console.error(`❌ Errore salvataggio Supabase per ${url}:`, error.message, error.details);
