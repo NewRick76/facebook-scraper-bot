@@ -1,18 +1,18 @@
 import express from 'express';
 import puppeteer from 'puppeteer';
 import { createClient } from '@supabase/supabase-js';
+import WebSocket from 'ws';
 
 const app = express();
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
+
+// Passiamo la classe WebSocket a Supabase
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: false },
   realtime: {
-    timeout: 0,
-    params: {
-      eventsPerSecond: 0
-    }
+    transport: WebSocket
   }
 });
 
