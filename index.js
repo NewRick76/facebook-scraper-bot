@@ -1,6 +1,6 @@
-const express = require('express');
-const puppeteer = require('puppeteer');
-const { createClient } = require('@supabase/supabase-js');
+import express from 'express';
+import puppeteer from 'puppeteer';
+import { createClient } from '@supabase/supabase-js';
 
 const app = express();
 app.use(express.json());
