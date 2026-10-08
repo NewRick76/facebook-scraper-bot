@@ -29,17 +29,18 @@ app.get('/scrape', async (req, res) => {
       return;
     }
 
-    const browser = await puppeteer.launch({
-  executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
-  headless: 'true',
+const browser = await puppeteer.launch({
+  headless: 'new',
   args: [
     '--no-sandbox',
     '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
+    '--disable-dev-shm-usage', // Usa /tmp invece di /dev/shm per risparmiare RAM
+    '--disable-accelerated-2d-canvas',
+    '--no-first-run',
+    '--no-zygote',
     '--disable-gpu'
   ]
 });
-
     const page = await browser.newPage();
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
