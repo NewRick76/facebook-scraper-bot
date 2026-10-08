@@ -1,24 +1,18 @@
 import express from 'express';
 import puppeteer from 'puppeteer';
 import { createClient } from '@supabase/supabase-js';
-import WebSocket from 'ws';
 
 const app = express();
-app.use(express.json());
 
-// Inserisci qui i tuoi dati di Supabase
-const SUPABASE_URL = 'https://amhqonfunjmhakhbpktx.supabase.co';
+const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
-  auth: { persistSession: false },
-  realtime: { transport: WebSocket }
-});
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 app.get('/scrape', async (req, res) => {
   res.json({ message: "Scraping avviato in background..." });
 
   try {
-    // 1. Recupera la lista delle squadre dal database con le colonne corrette
+    // 1. Recupera la lista delle squadre dal database
     const { data: squadre, error } = await supabase
       .from('squadre')
       .select('id_squadra, facebook_page_url')
@@ -29,7 +23,7 @@ app.get('/scrape', async (req, res) => {
       return;
     }
 
-    // 2. Avvia Puppeteer con flag per risparmiare memoria RAM
+    // 2. Avvia Puppeteer con configurazione stabile per Docker/Render
     const browser = await puppeteer.launch({
       headless: 'new',
       args: [
@@ -55,22 +49,22 @@ app.get('/scrape', async (req, res) => {
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         );
 
-        // Risparmio RAM per evitare crash su Render
+        // Blocco immagini e font prima della navigazione (manteniamo CSS attivi per consentire il rendering)
         await page.setRequestInterception(true);
         page.on('request', (req) => {
-          if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
+          if (['image', 'font', 'media'].includes(req.resourceType())) {
             req.abort();
           } else {
             req.continue();
           }
         });
 
-        // Navigazione diretta alla sezione /videos/
+        // Navigazione alla scheda /videos/
         const targetUrl = squadra.facebook_page_url.endsWith('/')
           ? `${squadra.facebook_page_url}videos/`
           : `${squadra.facebook_page_url}/videos/`;
 
-        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 35000 });
 
         // Scroll automatico per caricare i video fino a fine settembre
         for (let i = 0; i < 7; i++) {
@@ -139,7 +133,9 @@ app.get('/scrape', async (req, res) => {
       } catch (e) {
         console.error(`Errore durante lo scraping di ${squadra.facebook_page_url}:`, e.message);
       } finally {
-        await page.close();
+        if (!page.isClosed()) {
+          await page.close();
+        }
       }
     }
 
