@@ -41,16 +41,15 @@ const browser = await puppeteer.launch({
     '--disable-gpu'
   ]
 });
-// Sostituisci dalla riga 44 alla riga 75 con questo blocco:
 
-  for (const squadra of squadre) {
+for (const squadra of squadre) {
     if (!squadra.facebook_page_url) continue;
 
     console.log(`Scansione per: ${squadra.facebook_page_url}`);
     const page = await browser.newPage();
 
     try {
-      // Blocca risorse pesanti per risparmiare memoria RAM su Render
+      // 1. Risparmio RAM per evitare crash su Render
       await page.setRequestInterception(true);
       page.on('request', (req) => {
         if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
@@ -60,20 +59,20 @@ const browser = await puppeteer.launch({
         }
       });
 
-      // Naviga direttamente nella sezione /videos/ della pagina
+      // 2. Navigazione diretta alla sezione /videos/
       const targetUrl = squadra.facebook_page_url.endsWith('/')
         ? `${squadra.facebook_page_url}videos/`
         : `${squadra.facebook_page_url}/videos/`;
 
       await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-      // Esegui 7 scroll verso il basso per caricare anche i video di fine settembre
+      // 3. Scroll automatico per caricare i video fino a fine settembre
       for (let i = 0; i < 7; i++) {
         await page.evaluate(() => window.scrollBy(0, 1200));
         await new Promise(r => setTimeout(r, 1200));
       }
 
-      // Estrai ed escludi URL generici
+      // 4. Estrazione ed eliminazione dei link generici
       const videoLinks = await page.evaluate(() => {
         const links = Array.from(document.querySelectorAll('a'));
         return links
@@ -90,14 +89,32 @@ const browser = await puppeteer.launch({
       const uniqueVideoLinks = [...new Set(videoLinks)];
       console.log(`Trovati ${uniqueVideoLinks.length} video per ${squadra.facebook_page_url}`);
 
-      // Salva i video in Supabase
+      if (uniqueVideoLinks.length === 0) continue;
+
+      // 5. Cerca l'id_partita più recente per questa squadra nella tabella `partite`
+      const { data: partita, error: errPartita } = await supabase
+        .from('partite')
+        .select('id_partita')
+        .or(`id_squadra_casa.eq.${squadra.id_squadra},id_squadra_ospite.eq.${squadra.id_squadra}`)
+        .order('id_giornata', { ascending: false }) // Prende l'ultima giornata disputata
+        .limit(1)
+        .maybeSingle();
+
+      if (errPartita || !partita) {
+        console.error(`⚠️ Impossibile trovare una partita per la squadra ${squadra.id_squadra}:`, errPartita?.message);
+        continue;
+      }
+
+      // 6. Salva i video associando id_partita e id_squadra_autore
       for (const url of uniqueVideoLinks) {
         const { data, error } = await supabase
           .from('highlights_partite')
           .upsert(
             {
+              id_partita: partita.id_partita,
               id_squadra_autore: squadra.id_squadra,
-              video_url: url
+              video_url: url,
+              piattaforma: 'facebook'
             },
             { onConflict: 'video_url' }
           );
@@ -105,14 +122,14 @@ const browser = await puppeteer.launch({
         if (error) {
           console.error(`❌ Errore salvataggio Supabase per ${url}:`, error.message);
         } else {
-          console.log(`✅ Inserito con successo: ${url}`);
+          console.log(`✅ Inserito per Partita ${partita.id_partita}: ${url}`);
         }
       }
 
     } catch (e) {
       console.error(`Errore durante lo scraping di ${squadra.facebook_page_url}:`, e.message);
     } finally {
-      // Chiude la singola scheda per liberare subito la RAM
+      // Chiude la scheda per pulire subito la RAM
       await page.close();
     }
   }
