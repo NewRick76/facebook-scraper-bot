@@ -24,7 +24,7 @@ function classificaTitoloVideo(testo) {
   if (!testo) return null;
   const t = testo.toLowerCase();
 
-  // 0. ESCLUSIONS PREVENTIVE (Allenamenti, Mic'd Up, promo)
+  // 0. ESCLUSIONI PREVENTIVE (Allenamenti, Mic'd Up, promo)
   if (
     t.includes('mic’d up') || t.includes("mic'd up") || t.includes('micd up') ||
     t.includes('allenament') || t.includes('training') ||
@@ -79,38 +79,41 @@ function differenzaGiorni(d1, d2) {
 app.get('/scrape', async (req, res) => {
   res.json({ message: "Scraping avviato in background..." });
 
+  let browser = null;
+
   try {
     const { data: squadre } = await supabase.from('squadre').select('id_squadra, nome, facebook_page_url');
     const { data: tutteLePartite } = await supabase.from('partite').select('id_partita, id_squadra_casa, id_squadra_ospite, data_partita, id_giornata');
 
     if (!squadre || !tutteLePartite) return;
 
+    // Avviamo un'UNICA istanza di Chrome stabile fuori dal ciclo
+    browser = await puppeteer.launch({
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--disable-gpu',
+        '--disable-speech-api',
+        '--disable-background-networking'
+      ]
+    });
+
     for (const squadra of squadre) {
       if (!squadra.facebook_page_url) continue;
 
       console.log(`Scansione per: ${squadra.facebook_page_url}`);
+      let page = null;
 
-      let browser = null;
       try {
-        // Avviamo un'istanza separata di Chrome per OGNI SQUADRA senza passare executablePath
-        browser = await puppeteer.launch({
-          headless: 'new',
-          args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--single-process', // Riduce la RAM utilizzata
-            '--disable-gpu'
-          ]
-        });
-
-        const page = await browser.newPage();
+        page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
         
-        // Blocchiamo immagini, font e CSS per risparmiare risorse e velocizzare il caricamento
+        // Blocchiamo immagini, font, media e CSS per risparmiare fino all'80% di RAM
         await page.setRequestInterception(true);
         page.on('request', (req) => {
           if (['image', 'font', 'media', 'stylesheet'].includes(req.resourceType())) req.abort();
@@ -215,8 +218,8 @@ app.get('/scrape', async (req, res) => {
       } catch (e) {
         console.error(`Errore scraping ${squadra.facebook_page_url}:`, e.message);
       } finally {
-        if (browser) {
-          await browser.close(); // Chiude tassativamente il browser e svuota la RAM
+        if (page) {
+          await page.close(); // Chiude la singola scheda dopo ogni squadra salvando memoria
         }
       }
     }
@@ -224,6 +227,10 @@ app.get('/scrape', async (req, res) => {
     console.log('Scraping completato per tutte le squadre!');
   } catch (err) {
     console.error('Errore generale:', err);
+  } finally {
+    if (browser) {
+      await browser.close(); // Chiude il browser alla fine di tutto lo scraping
+    }
   }
 });
 
