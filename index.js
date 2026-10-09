@@ -20,6 +20,9 @@ const NOMI_SQUADRE_MAP = {
   'roma': ['roma', 'virtus roma']
 };
 
+// Flag di sicurezza per evitare esecuzioni sovrapposte
+let isScrapingRunning = false;
+
 function classificaTitoloVideo(testo) {
   if (!testo) return null;
   const t = testo.toLowerCase();
@@ -76,6 +79,12 @@ function differenzaGiorni(d1, d2) {
 }
 
 app.get('/scrape', async (req, res) => {
+  // Se un processo di scraping è già attivo, rifiuta la nuova richiesta per proteggere la RAM
+  if (isScrapingRunning) {
+    return res.status(429).json({ message: "Un processo di scraping è già in esecuzione!" });
+  }
+
+  isScrapingRunning = true;
   res.json({ message: "Scraping avviato in background..." });
 
   try {
@@ -95,7 +104,6 @@ app.get('/scrape', async (req, res) => {
       let page = null;
 
       try {
-        // Un'istanza completamente pulita per OGNI squadra
         browser = await puppeteer.launch({
           headless: 'new',
           args: [
@@ -222,13 +230,14 @@ app.get('/scrape', async (req, res) => {
         if (browser) await browser.close().catch(() => {});
       }
 
-      // Pausa di 1 secondo per pulire la memoria di sistema
       await new Promise((r) => setTimeout(r, 1000));
     }
 
     console.log('Scraping completato per tutte le squadre!');
   } catch (err) {
     console.error('Errore generale:', err);
+  } finally {
+    isScrapingRunning = false; // Sblocca la variabile al termine dell'operazione
   }
 });
 
