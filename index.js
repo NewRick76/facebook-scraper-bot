@@ -8,27 +8,32 @@ const app = express();
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
-// Passiamo la classe WebSocket a Supabase
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: false },
-  realtime: {
-    transport: WebSocket
-  }
+  realtime: { transport: WebSocket }
 });
 
-// Mappa di sinonimi/nomi brevi usati sui social per le squadre
 const NOMI_SQUADRE_MAP = {
   'agrigento': ['agrigento', 'moncada'],
-  'omenga': ['omegna', 'fulgor'],
+  'omegna': ['omegna', 'fulgor'],
   'imola': ['imola', 'andrea costa'],
-  'roma': ['roma', 'virtus roma'],
-  // Aggiungi qui altri alias se li trovi nei post
+  'roma': ['roma', 'virtus roma']
 };
 
 function classificaTitoloVideo(testo) {
   if (!testo) return null;
   const t = testo.toLowerCase();
 
+  // 0. ESCLUSIONI PREVENTIVE (Allenamenti, Mic'd Up, promo)
+  if (
+    t.includes('mic’d up') || t.includes("mic'd up") || t.includes('micd up') ||
+    t.includes('allenament') || t.includes('training') ||
+    t.includes('dietro le quinte') || t.includes('backstage')
+  ) {
+    return null;
+  }
+
+  // 1. HIGHLIGHTS
   if (
     t.includes('highlight') || t.includes('sintesi') ||
     t.includes('azioni salienti') || t.includes('top 10') ||
@@ -37,6 +42,7 @@ function classificaTitoloVideo(testo) {
     return 'Highlights';
   }
 
+  // 2. POST-PARTITA
   if (
     t.includes('conferenza') || t.includes('postpartita') ||
     t.includes('post-partita') || t.includes('post gara') ||
@@ -47,6 +53,7 @@ function classificaTitoloVideo(testo) {
     return 'Post-Partita';
   }
 
+  // 3. PREPARTITA
   if (
     t.includes('prepartita') || t.includes('pre-partita') ||
     t.includes('pre gara') || t.includes('anteprima') ||
@@ -64,7 +71,6 @@ function classificaTitoloVideo(testo) {
   return null;
 }
 
-// Calcola la differenza in giorni tra due date
 function differenzaGiorni(d1, d2) {
   const diffTime = Math.abs(d1 - d2);
   return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
@@ -79,22 +85,36 @@ app.get('/scrape', async (req, res) => {
 
     if (!squadre || !tutteLePartite) return;
 
-    const browser = await puppeteer.launch({
-      headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-    });
-
     for (const squadra of squadre) {
       if (!squadra.facebook_page_url) continue;
 
       console.log(`Scansione per: ${squadra.facebook_page_url}`);
-      const page = await browser.newPage();
 
+      let browser = null;
       try {
+        // Avviamo un'istanza separata di Chrome per OGNI SQUADRA per liberare la memoria
+        browser = await puppeteer.launch({
+          headless: 'new',
+          executablePath: puppeteer.executablePath(),
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--single-process', // Riduce la RAM utilizzata
+            '--disable-gpu'
+          ]
+        });
+
+        const page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+        
+        // Blocchiamo immagini, font e CSS per risparmiare risorse e velocizzare il caricamento
         await page.setRequestInterception(true);
         page.on('request', (req) => {
-          if (['image', 'font', 'media'].includes(req.resourceType())) req.abort();
+          if (['image', 'font', 'media', 'stylesheet'].includes(req.resourceType())) req.abort();
           else req.continue();
         });
 
@@ -102,14 +122,13 @@ app.get('/scrape', async (req, res) => {
           ? `${squadra.facebook_page_url}videos/`
           : `${squadra.facebook_page_url}/videos/`;
 
-        await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 35000 });
+        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-        for (let i = 0; i < 7; i++) {
-          await page.evaluate(() => window.scrollBy(0, 1200));
-          await new Promise((r) => setTimeout(r, 1200));
+        for (let i = 0; i < 4; i++) {
+          await page.evaluate(() => window.scrollBy(0, 1000));
+          await new Promise((r) => setTimeout(r, 800));
         }
 
-        // Estrazione dati post (URL, Testo e Data di pubblicazione)
         const rawItems = await page.evaluate(() => {
           const results = [];
           const links = Array.from(document.querySelectorAll('a'));
@@ -122,22 +141,19 @@ app.get('/scrape', async (req, res) => {
             if (isVideo && isNotGeneric) {
               const article = a.closest('div[role="article"]');
               const parentText = article?.innerText || a.innerText || '';
-              
-              // Tenta di estrarre il tag dell'ora/data dal post di Facebook
               const timeEl = article?.querySelector('time');
               const postDate = timeEl ? timeEl.getAttribute('datetime') : null;
 
               results.push({
                 url: href,
                 fullText: parentText,
-                postDate: postDate ? new Date(postDate) : new Date() // Fallback a oggi se assente
+                postDate: postDate ? new Date(postDate) : new Date()
               });
             }
           });
           return results;
         });
 
-        // Partite della squadra corrente
         const partiteSquadra = tutteLePartite.filter(
           p => p.id_squadra_casa === squadra.id_squadra || p.id_squadra_ospite === squadra.id_squadra
         );
@@ -149,17 +165,13 @@ app.get('/scrape', async (req, res) => {
           const testoLower = item.fullText.toLowerCase();
           let partitaScelta = null;
 
-          // 1. Cercare se il testo menziona l'avversario
           for (const avversario of squadre) {
-            if (avversario.id_squadra === squadra.id_squadra) continue; // Salta se stessa
+            if (avversario.id_squadra === squadra.id_squadra) continue;
 
             const nomeAvversarioLower = avversario.nome.toLowerCase();
             const aliasList = NOMI_SQUADRE_MAP[nomeAvversarioLower] || [nomeAvversarioLower];
 
-            const trovato = aliasList.some(alias => testoLower.includes(alias));
-
-            if (trovato) {
-              // Trova i due match (Andata e Ritorno) contro questo avversario
+            if (aliasList.some(alias => testoLower.includes(alias))) {
               const matchScontri = partiteSquadra.filter(
                 p => p.id_squadra_casa === avversario.id_squadra || p.id_squadra_ospite === avversario.id_squadra
               );
@@ -167,33 +179,26 @@ app.get('/scrape', async (req, res) => {
               if (matchScontri.length === 1) {
                 partitaScelta = matchScontri[0];
               } else if (matchScontri.length > 1) {
-                // Se ce ne sono due, scegli quella più vicina alla data del post su Facebook
                 const dataPost = new Date(item.postDate);
                 matchScontri.sort((a, b) => {
-                  const diffA = differenzaGiorni(dataPost, new Date(a.data_partita));
-                  const diffB = differenzaGiorni(dataPost, new Date(b.data_partita));
-                  return diffA - diffB;
+                  return differenzaGiorni(dataPost, new Date(a.data_partita)) - differenzaGiorni(dataPost, new Date(b.data_partita));
                 });
-                partitaScelta = matchScontri[0]; // Prende la più vicina nel tempo
+                partitaScelta = matchScontri[0];
               }
               break;
             }
           }
 
-          // 2. Se l'avversario non è trovato nel testo, cerca solo in base alla data_partita più vicina
           if (!partitaScelta && partiteSquadra.length > 0) {
             const dataPost = new Date(item.postDate);
             partiteSquadra.sort((a, b) => {
-              const diffA = differenzaGiorni(dataPost, new Date(a.data_partita));
-              const diffB = differenzaGiorni(dataPost, new Date(b.data_partita));
-              return diffA - diffB;
+              return differenzaGiorni(dataPost, new Date(a.data_partita)) - differenzaGiorni(dataPost, new Date(b.data_partita));
             });
             partitaScelta = partiteSquadra[0];
           }
 
           if (!partitaScelta) continue;
 
-          // Inserimento finale nel DB con id_partita reale
           await supabase.from('highlights_partite').upsert(
             {
               id_partita: partitaScelta.id_partita,
@@ -205,21 +210,23 @@ app.get('/scrape', async (req, res) => {
             { onConflict: 'video_url' }
           );
 
-          console.log(`✅ Inserito [${categoriaTitolo}] per Partita ID ${partitaScelta.id_partita}: ${item.url}`);
+          console.log(`✅ [${categoriaTitolo}] -> Partita ID ${partitaScelta.id_partita}: ${item.url}`);
         }
 
       } catch (e) {
         console.error(`Errore scraping ${squadra.facebook_page_url}:`, e.message);
       } finally {
-        if (!page.isClosed()) await page.close();
+        if (browser) {
+          await browser.close(); // Chiude tassativamente il browser e svuota la RAM
+        }
       }
     }
 
-    await browser.close();
+    console.log('Scraping completato per tutte le squadre!');
   } catch (err) {
     console.error('Errore generale:', err);
   }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`Server attivo sulla porta ${PORT}`));
