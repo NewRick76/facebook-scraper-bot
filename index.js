@@ -15,7 +15,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 
 const NOMI_SQUADRE_MAP = {
   'agrigento': ['agrigento', 'moncada'],
-  'omegna': ['omegna', 'fulgor'],
+  'omegna': ['omegna', 'fulgor', 'paffoni'],
   'imola': ['imola', 'andrea costa'],
   'roma': ['roma', 'virtus roma']
 };
@@ -94,12 +94,11 @@ function withTimeout(promise, ms) {
   return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
 }
 
-// Funzione di chiusura sicura del browser per evitare che il processo rimanga "hang"
 async function closeBrowserSafely(browser) {
   if (!browser) return;
   try {
     const closePromise = browser.close();
-    const timeoutPromise = new Promise((r) => setTimeout(r, 3000));
+    const timeoutPromise = new Promise((r) => setTimeout(r, 2000));
     await Promise.race([closePromise, timeoutPromise]);
   } catch (e) {
     // ignorato
@@ -133,6 +132,9 @@ async function scansionaSquadra(squadra, squadre, tutteLePartite) {
     });
 
     page = await browser.newPage();
+    page.setDefaultTimeout(10000);
+    page.setDefaultNavigationTimeout(10000);
+
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
 
     await page.setRequestInterception(true);
@@ -145,37 +147,42 @@ async function scansionaSquadra(squadra, squadre, tutteLePartite) {
       ? `${squadra.facebook_page_url}videos/`
       : `${squadra.facebook_page_url}/videos/`;
 
-    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 12000 });
 
+    // Scroll protetto da timeout breve
     for (let i = 0; i < 3; i++) {
-      await page.evaluate(() => window.scrollBy(0, 1000)).catch(() => {});
-      await new Promise((r) => setTimeout(r, 500));
+      await withTimeout(page.evaluate(() => window.scrollBy(0, 1000)), 3000).catch(() => {});
+      await new Promise((r) => setTimeout(r, 400));
     }
 
-    const rawItems = await page.evaluate(() => {
-      const results = [];
-      const links = Array.from(document.querySelectorAll('a'));
+    // Estrazione link protetta da timeout breve (max 5 secondi)
+    const rawItems = await withTimeout(
+      page.evaluate(() => {
+        const results = [];
+        const links = Array.from(document.querySelectorAll('a'));
 
-      links.forEach((a) => {
-        const href = a.href || '';
-        const isVideo = href.includes('/videos/') || href.includes('/watch/?v=') || href.includes('/reel/');
-        const isNotGeneric = href !== 'https://www.facebook.com/watch/' && !href.endsWith('/videos/');
+        links.forEach((a) => {
+          const href = a.href || '';
+          const isVideo = href.includes('/videos/') || href.includes('/watch/?v=') || href.includes('/reel/');
+          const isNotGeneric = href !== 'https://www.facebook.com/watch/' && !href.endsWith('/videos/');
 
-        if (isVideo && isNotGeneric) {
-          const article = a.closest('div[role="article"]');
-          const parentText = article?.innerText || a.innerText || '';
-          const timeEl = article?.querySelector('time');
-          const postDate = timeEl ? timeEl.getAttribute('datetime') : null;
+          if (isVideo && isNotGeneric) {
+            const article = a.closest('div[role="article"]');
+            const parentText = article?.innerText || a.innerText || '';
+            const timeEl = article?.querySelector('time');
+            const postDate = timeEl ? timeEl.getAttribute('datetime') : null;
 
-          results.push({
-            url: href,
-            fullText: parentText,
-            postDate: postDate ? new Date(postDate) : new Date()
-          });
-        }
-      });
-      return results;
-    }).catch(() => []);
+            results.push({
+              url: href,
+              fullText: parentText,
+              postDate: postDate ? new Date(postDate) : new Date()
+            });
+          }
+        });
+        return results;
+      }),
+      5000
+    ).catch(() => []);
 
     const partiteSquadra = tutteLePartite.filter(
       p => p.id_squadra_casa === squadra.id_squadra || p.id_squadra_ospite === squadra.id_squadra
@@ -264,13 +271,13 @@ app.get('/scrape', async (req, res) => {
       console.log(`Scansione (${counter}/${squadre.length}) per: ${squadra.facebook_page_url}`);
 
       try {
-        // Limite tassativo di 30 secondi per l'intera operazione della squadra
-        await withTimeout(scansionaSquadra(squadra, squadre, tutteLePartite), 30000);
+        // Tassativo: 25 secondi massimi a squadra inclusi scroll ed estrazione
+        await withTimeout(scansionaSquadra(squadra, squadre, tutteLePartite), 25000);
       } catch (err) {
         console.error(`⚠️ Salto ${squadra.facebook_page_url}: ${err.message}`);
       }
 
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((r) => setTimeout(r, 400));
     }
 
     console.log('Scraping completato per tutte le squadre!');
