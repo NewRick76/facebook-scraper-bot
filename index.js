@@ -26,47 +26,56 @@ function classificaTitoloVideo(testo) {
   if (!testo) return null;
   const t = testo.toLowerCase();
 
-  // 0. ESCLUSIONI PREVENTIVE
+  // 0. ESCLUSIONI PREVENTIVE (Allenamenti, sponsor, eventi societari, giovanili, minibasket)
   if (
     t.includes('allenament') || t.includes('training') ||
-    t.includes('dietro le quinte') || t.includes('backstage')
+    t.includes('dietro le quinte') || t.includes('backstage') ||
+    t.includes('minibasket') || t.includes('giovanil') ||
+    t.includes('scuola basket') || t.includes('sponsor') ||
+    t.includes('presentazione del main') || t.includes('presentazione maglie') ||
+    t.includes('presentazione roster')
   ) {
     return null;
   }
 
-  // 1. HIGHLIGHTS
+  // 1. HIGHLIGHTS (Priorità massima per le sintesi di gara)
   if (
     t.includes('highlight') || t.includes('sintesi') ||
     t.includes('azioni salienti') || t.includes('top 10') ||
-    t.includes('best of') || t.includes('mini film') || t.includes('canestri')
+    t.includes('best of') || t.includes('mini film') ||
+    (t.includes('canestri') && !t.includes('minibasket'))
   ) {
     return 'Highlights';
   }
 
-  // 2. POST-PARTITA
-  if (
-    t.includes('conferenza') || t.includes('postpartita') ||
-    t.includes('post-partita') || t.includes('post gara') ||
-    t.includes('dopo gara') || t.includes('intervist') ||
-    t.includes('dopo match') || t.includes('sala stampa') ||
-    t.includes('commenta') || t.includes('commento')
-  ) {
-    return 'Post-Partita';
-  }
-
-  // 3. PREPARTITA
+  // 2. PREPARTITA (Priorità per la presentazione di gare imminenti)
   if (
     t.includes('prepartita') || t.includes('pre-partita') ||
     t.includes('pre gara') || t.includes('anteprima') ||
     t.includes('presentazione gara') || t.includes('alla vigilia') ||
-    t.includes('verso ') || t.includes('in vista') || t.includes('parla in vista')
+    t.includes('verso ') || t.includes('in vista') ||
+    t.includes('guardiamo al match') || t.includes('presenta il match') ||
+    t.includes('affronterà') || t.includes('presenta la sfida')
   ) {
     return 'Prepartita';
   }
 
+  // 3. POST-PARTITA (Filtri dedicati esclusivamente al post-gara)
+  if (
+    t.includes('postpartita') || t.includes('post-partita') ||
+    t.includes('post gara') || t.includes('dopo gara') ||
+    t.includes('dopo match') || t.includes('commento al match') ||
+    t.includes('commenta la vittoria') || t.includes('commenta la sconfitta') ||
+    (t.includes('conferenza') && !t.includes('presentazione')) ||
+    (t.includes('sala stampa') && !t.includes('presentazione'))
+  ) {
+    return 'Post-Partita';
+  }
+
+  // 4. CONTROLLI DI RIPIEGO CONTESTUALIZZATI SULLA PARTITA
   if (t.includes('coach') || t.includes('parole')) {
-    if (t.includes('dopo') || t.includes('vittoria') || t.includes('sconfitta')) return 'Post-Partita';
-    if (t.includes('sfida') || t.includes('match') || t.includes('prossim')) return 'Prepartita';
+    if (t.includes('dopo la gara') || t.includes('vittoria') || t.includes('sconfitta')) return 'Post-Partita';
+    if (t.includes('sfida') || t.includes('match') || t.includes('prossima gara') || t.includes('prossimo match')) return 'Prepartita';
   }
 
   return null;
