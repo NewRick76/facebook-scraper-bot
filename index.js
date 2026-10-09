@@ -26,7 +26,7 @@ function classificaTitoloVideo(testo) {
   if (!testo) return null;
   const t = testo.toLowerCase();
 
-  // 0. ESCLUSIONI PREVENTIVE (Allenamenti, sponsor, eventi societari, giovanili, minibasket)
+  // 0. ESCLUSIONI PREVENTIVE
   if (
     t.includes('allenament') || t.includes('training') ||
     t.includes('dietro le quinte') || t.includes('backstage') ||
@@ -38,7 +38,7 @@ function classificaTitoloVideo(testo) {
     return null;
   }
 
-  // 1. HIGHLIGHTS (Priorità massima per le sintesi di gara)
+  // 1. HIGHLIGHTS
   if (
     t.includes('highlight') || t.includes('sintesi') ||
     t.includes('azioni salienti') || t.includes('top 10') ||
@@ -48,7 +48,7 @@ function classificaTitoloVideo(testo) {
     return 'Highlights';
   }
 
-  // 2. PREPARTITA (Priorità per la presentazione di gare imminenti)
+  // 2. PREPARTITA
   if (
     t.includes('prepartita') || t.includes('pre-partita') ||
     t.includes('pre gara') || t.includes('anteprima') ||
@@ -60,7 +60,7 @@ function classificaTitoloVideo(testo) {
     return 'Prepartita';
   }
 
-  // 3. POST-PARTITA (Filtri dedicati esclusivamente al post-gara)
+  // 3. POST-PARTITA
   if (
     t.includes('postpartita') || t.includes('post-partita') ||
     t.includes('post gara') || t.includes('dopo gara') ||
@@ -72,7 +72,7 @@ function classificaTitoloVideo(testo) {
     return 'Post-Partita';
   }
 
-  // 4. CONTROLLI DI RIPIEGO CONTESTUALIZZATI SULLA PARTITA
+  // 4. CONTROLLI DI RIPIEGO
   if (t.includes('coach') || t.includes('parole')) {
     if (t.includes('dopo la gara') || t.includes('vittoria') || t.includes('sconfitta')) return 'Post-Partita';
     if (t.includes('sfida') || t.includes('match') || t.includes('prossima gara') || t.includes('prossimo match')) return 'Prepartita';
@@ -86,13 +86,30 @@ function differenzaGiorni(d1, d2) {
   return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 }
 
-// Helper per forzare un timeout massimale su un'operazione asincrona
 function withTimeout(promise, ms) {
   let timeoutId;
   const timeoutPromise = new Promise((_, reject) => {
     timeoutId = setTimeout(() => reject(new Error(`Timeout superato (${ms / 1000}s)`)), ms);
   });
   return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
+}
+
+// Funzione di chiusura sicura del browser per evitare che il processo rimanga "hang"
+async function closeBrowserSafely(browser) {
+  if (!browser) return;
+  try {
+    const closePromise = browser.close();
+    const timeoutPromise = new Promise((r) => setTimeout(r, 3000));
+    await Promise.race([closePromise, timeoutPromise]);
+  } catch (e) {
+    // ignorato
+  } finally {
+    if (browser.process() && !browser.process().killed) {
+      try {
+        browser.process().kill('SIGKILL');
+      } catch (e) {}
+    }
+  }
 }
 
 async function scansionaSquadra(squadra, squadre, tutteLePartite) {
@@ -128,11 +145,11 @@ async function scansionaSquadra(squadra, squadre, tutteLePartite) {
       ? `${squadra.facebook_page_url}videos/`
       : `${squadra.facebook_page_url}/videos/`;
 
-    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
     for (let i = 0; i < 3; i++) {
-      await page.evaluate(() => window.scrollBy(0, 1000));
-      await new Promise((r) => setTimeout(r, 600));
+      await page.evaluate(() => window.scrollBy(0, 1000)).catch(() => {});
+      await new Promise((r) => setTimeout(r, 500));
     }
 
     const rawItems = await page.evaluate(() => {
@@ -158,7 +175,7 @@ async function scansionaSquadra(squadra, squadre, tutteLePartite) {
         }
       });
       return results;
-    });
+    }).catch(() => []);
 
     const partiteSquadra = tutteLePartite.filter(
       p => p.id_squadra_casa === squadra.id_squadra || p.id_squadra_ospite === squadra.id_squadra
@@ -221,7 +238,7 @@ async function scansionaSquadra(squadra, squadre, tutteLePartite) {
 
   } finally {
     if (page) await page.close().catch(() => {});
-    if (browser) await browser.close().catch(() => {});
+    await closeBrowserSafely(browser);
   }
 }
 
@@ -247,13 +264,13 @@ app.get('/scrape', async (req, res) => {
       console.log(`Scansione (${counter}/${squadre.length}) per: ${squadra.facebook_page_url}`);
 
       try {
-        // Forza un blocco di massimo 40 secondi a squadra per impedire stalli definitivi
-        await withTimeout(scansionaSquadra(squadra, squadre, tutteLePartite), 40000);
+        // Limite tassativo di 30 secondi per l'intera operazione della squadra
+        await withTimeout(scansionaSquadra(squadra, squadre, tutteLePartite), 30000);
       } catch (err) {
         console.error(`⚠️ Salto ${squadra.facebook_page_url}: ${err.message}`);
       }
 
-      await new Promise((r) => setTimeout(r, 1000));
+      await new Promise((r) => setTimeout(r, 500));
     }
 
     console.log('Scraping completato per tutte le squadre!');
