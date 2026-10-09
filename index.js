@@ -24,7 +24,7 @@ function classificaTitoloVideo(testo) {
   if (!testo) return null;
   const t = testo.toLowerCase();
 
-  // 0. ESCLUSIONI PREVENTIVE (Allenamenti, Mic'd Up, promo)
+  // 0. ESCLUSIONS PREVENTIVE (Allenamenti, Mic'd Up, promo)
   if (
     t.includes('mic’d up') || t.includes("mic'd up") || t.includes('micd up') ||
     t.includes('allenament') || t.includes('training') ||
@@ -92,10 +92,9 @@ app.get('/scrape', async (req, res) => {
 
       let browser = null;
       try {
-        // Avviamo un'istanza separata di Chrome per OGNI SQUADRA per liberare la memoria
+        // Avviamo un'istanza separata di Chrome per OGNI SQUADRA senza passare executablePath
         browser = await puppeteer.launch({
           headless: 'new',
-          executablePath: puppeteer.executablePath(),
           args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
