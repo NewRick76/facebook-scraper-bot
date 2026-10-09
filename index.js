@@ -26,8 +26,7 @@ function classificaTitoloVideo(testo) {
 
   // 0. ESCLUSIONI PREVENTIVE (Allenamenti, Mic'd Up, promo)
   if (
-    t.includes('mic’d up') || t.includes("mic'd up") || t.includes('micd up') ||
-    t.includes('allenament') || t.includes('training') ||
+      t.includes('allenament') || t.includes('training') ||
     t.includes('dietro le quinte') || t.includes('backstage')
   ) {
     return null;
