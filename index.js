@@ -24,9 +24,9 @@ function classificaTitoloVideo(testo) {
   if (!testo) return null;
   const t = testo.toLowerCase();
 
-  // 0. ESCLUSIONI PREVENTIVE (Allenamenti, Mic'd Up, promo)
+  // 0. ESCLUSIONI PREVENTIVE (Allenamenti, backstage, promo)
   if (
-      t.includes('allenament') || t.includes('training') ||
+    t.includes('allenament') || t.includes('training') ||
     t.includes('dietro le quinte') || t.includes('backstage')
   ) {
     return null;
@@ -75,6 +75,24 @@ function differenzaGiorni(d1, d2) {
   return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 }
 
+// Funzione helper per lanciare Chrome con le opzioni anti-RAM
+async function launchFreshBrowser() {
+  return await puppeteer.launch({
+    headless: 'new',
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--no-zygote',
+      '--disable-gpu',
+      '--disable-speech-api',
+      '--disable-background-networking'
+    ]
+  });
+}
+
 app.get('/scrape', async (req, res) => {
   res.json({ message: "Scraping avviato in background..." });
 
@@ -86,33 +104,27 @@ app.get('/scrape', async (req, res) => {
 
     if (!squadre || !tutteLePartite) return;
 
-    // Avviamo un'UNICA istanza di Chrome stabile fuori dal ciclo
-    browser = await puppeteer.launch({
-      headless: 'new',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu',
-        '--disable-speech-api',
-        '--disable-background-networking'
-      ]
-    });
+    browser = await launchFreshBrowser();
+    let counterSquadre = 0;
 
     for (const squadra of squadre) {
       if (!squadra.facebook_page_url) continue;
 
-      console.log(`Scansione per: ${squadra.facebook_page_url}`);
+      // Riavvia il browser ogni 5 squadre per svuotare completamente la RAM
+      if (counterSquadre > 0 && counterSquadre % 5 === 0) {
+        console.log('🔄 Riavvio periodico del browser per pulizia RAM...');
+        if (browser) await browser.close().catch(() => {});
+        browser = await launchFreshBrowser();
+      }
+      counterSquadre++;
+
+      console.log(`Scansione (${counterSquadre}/${squadre.length}) per: ${squadra.facebook_page_url}`);
       let page = null;
 
       try {
         page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
         
-        // Blocchiamo immagini, font, media e CSS per risparmiare fino all'80% di RAM
         await page.setRequestInterception(true);
         page.on('request', (req) => {
           if (['image', 'font', 'media', 'stylesheet'].includes(req.resourceType())) req.abort();
@@ -218,9 +230,12 @@ app.get('/scrape', async (req, res) => {
         console.error(`Errore scraping ${squadra.facebook_page_url}:`, e.message);
       } finally {
         if (page) {
-          await page.close(); // Chiude la singola scheda dopo ogni squadra salvando memoria
+          await page.close().catch(() => {});
         }
       }
+
+      // Breve pausa di 1 secondo tra una squadra e l'altra
+      await new Promise((r) => setTimeout(r, 1000));
     }
 
     console.log('Scraping completato per tutte le squadre!');
@@ -228,7 +243,7 @@ app.get('/scrape', async (req, res) => {
     console.error('Errore generale:', err);
   } finally {
     if (browser) {
-      await browser.close(); // Chiude il browser alla fine di tutto lo scraping
+      await browser.close().catch(() => {});
     }
   }
 });
