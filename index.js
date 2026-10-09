@@ -94,68 +94,38 @@ function withTimeout(promise, ms) {
   return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
 }
 
-async function closeBrowserSafely(browser) {
-  if (!browser) return;
-  try {
-    const closePromise = browser.close();
-    const timeoutPromise = new Promise((r) => setTimeout(r, 2000));
-    await Promise.race([closePromise, timeoutPromise]);
-  } catch (e) {
-    // ignorato
-  } finally {
-    if (browser.process() && !browser.process().killed) {
-      try {
-        browser.process().kill('SIGKILL');
-      } catch (e) {}
-    }
-  }
-}
-
-async function scansionaSquadra(squadra, squadre, tutteLePartite) {
-  let browser = null;
+async function scansionaSquadra(browser, squadra, squadre, tutteLePartite) {
   let page = null;
 
   try {
-    browser = await puppeteer.launch({
-      headless: 'new',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu',
-        '--disable-speech-api',
-        '--disable-background-networking'
-      ]
-    });
-
     page = await browser.newPage();
-    page.setDefaultTimeout(10000);
-    page.setDefaultNavigationTimeout(10000);
+    page.setDefaultTimeout(8000);
+    page.setDefaultNavigationTimeout(8000);
 
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
 
+    // Blocco delle risorse pesante per risparmiare memoria
     await page.setRequestInterception(true);
     page.on('request', (req) => {
-      if (['image', 'font', 'media', 'stylesheet'].includes(req.resourceType())) req.abort();
-      else req.continue();
+      const type = req.resourceType();
+      if (['image', 'font', 'media', 'stylesheet', 'other'].includes(type)) {
+        req.abort();
+      } else {
+        req.continue();
+      }
     });
 
     const targetUrl = squadra.facebook_page_url.endsWith('/')
       ? `${squadra.facebook_page_url}videos/`
       : `${squadra.facebook_page_url}/videos/`;
 
-    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 12000 });
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
 
-    // Scroll protetto da timeout breve
-    for (let i = 0; i < 3; i++) {
-      await withTimeout(page.evaluate(() => window.scrollBy(0, 1000)), 3000).catch(() => {});
-      await new Promise((r) => setTimeout(r, 400));
+    for (let i = 0; i < 2; i++) {
+      await withTimeout(page.evaluate(() => window.scrollBy(0, 1000)), 2000).catch(() => {});
+      await new Promise((r) => setTimeout(r, 300));
     }
 
-    // Estrazione link protetta da timeout breve (max 5 secondi)
     const rawItems = await withTimeout(
       page.evaluate(() => {
         const results = [];
@@ -181,7 +151,7 @@ async function scansionaSquadra(squadra, squadre, tutteLePartite) {
         });
         return results;
       }),
-      5000
+      4000
     ).catch(() => []);
 
     const partiteSquadra = tutteLePartite.filter(
@@ -244,8 +214,9 @@ async function scansionaSquadra(squadra, squadre, tutteLePartite) {
     }
 
   } finally {
-    if (page) await page.close().catch(() => {});
-    await closeBrowserSafely(browser);
+    if (page) {
+      await page.close().catch(() => {});
+    }
   }
 }
 
@@ -257,11 +228,30 @@ app.get('/scrape', async (req, res) => {
   isScrapingRunning = true;
   res.json({ message: "Scraping avviato in background..." });
 
+  let browser = null;
+
   try {
     const { data: squadre } = await supabase.from('squadre').select('id_squadra, nome, facebook_page_url');
     const { data: tutteLePartite } = await supabase.from('partite').select('id_partita, id_squadra_casa, id_squadra_ospite, data_partita, id_giornata');
 
     if (!squadre || !tutteLePartite) return;
+
+    // Launch Chromium con opzioni ultra-strette per la memoria RAM
+    browser = await puppeteer.launch({
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--disable-gpu',
+        '--disable-speech-api',
+        '--disable-background-networking',
+        '--js-flags="--max-old-space-size=256"'
+      ]
+    });
 
     let counter = 0;
     for (const squadra of squadre) {
@@ -271,19 +261,23 @@ app.get('/scrape', async (req, res) => {
       console.log(`Scansione (${counter}/${squadre.length}) per: ${squadra.facebook_page_url}`);
 
       try {
-        // Tassativo: 25 secondi massimi a squadra inclusi scroll ed estrazione
-        await withTimeout(scansionaSquadra(squadra, squadre, tutteLePartite), 25000);
+        await withTimeout(scansionaSquadra(browser, squadra, squadre, tutteLePartite), 20000);
       } catch (err) {
         console.error(`⚠️ Salto ${squadra.facebook_page_url}: ${err.message}`);
       }
 
-      await new Promise((r) => setTimeout(r, 400));
+      // Pausa di pulizia RAM
+      await new Promise((r) => setTimeout(r, 1000));
+      if (global.gc) global.gc();
     }
 
     console.log('Scraping completato per tutte le squadre!');
   } catch (err) {
     console.error('Errore generale:', err);
   } finally {
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
     isScrapingRunning = false;
   }
 });
