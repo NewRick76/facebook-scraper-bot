@@ -30,7 +30,6 @@ function classificaTitoloVideo(testo) {
   if (!testo) return null;
   const t = testo.toLowerCase();
 
-  // 0. ESCLUSIONI PREVENTIVE
   if (
     t.includes('allenament') || t.includes('training') ||
     t.includes('dietro le quinte') || t.includes('backstage') ||
@@ -46,7 +45,6 @@ function classificaTitoloVideo(testo) {
     return null;
   }
 
-  // 1. HIGHLIGHTS
   if (
     t.includes('highlight') || t.includes('sintesi') ||
     t.includes('azioni salienti') || t.includes('top 10') ||
@@ -56,7 +54,6 @@ function classificaTitoloVideo(testo) {
     return 'Highlights';
   }
 
-  // 2. POST-PARTITA
   if (
     t.includes('postpartita') || t.includes('post-partita') ||
     t.includes('post gara') || t.includes('dopo gara') ||
@@ -71,7 +68,6 @@ function classificaTitoloVideo(testo) {
     return 'Post-Partita';
   }
 
-  // 3. PREPARTITA
   if (
     t.includes('prepartita') || t.includes('pre-partita') ||
     t.includes('pre gara') || t.includes('anteprima') ||
@@ -87,7 +83,6 @@ function classificaTitoloVideo(testo) {
     return 'Prepartita';
   }
 
-  // 4. CONTROLLI DI RIPIEGO
   if (t.includes('coach') || t.includes('parole') || t.includes('intervista')) {
     if (t.includes('dopo la gara') || t.includes('vittoria') || t.includes('sconfitta') || t.includes('al termine')) return 'Post-Partita';
     if (t.includes('sfida') || t.includes('match') || t.includes('prossima gara') || t.includes('prossimo match') || t.includes('domenica')) return 'Prepartita';
@@ -178,16 +173,7 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
 
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    // Ripristiniamo l'intercettazione risorse identica a prima
-    await page.setRequestInterception(true);
-    page.on('request', (req) => {
-      const type = req.resourceType();
-      if (['image', 'font', 'media', 'stylesheet'].includes(type)) {
-        req.abort();
-      } else {
-        req.continue();
-      }
-    });
+    // NESSUNA intercettazione di risorse (come nella versione iniziale funzionante)
 
     let targetUrl = squadra.facebook_page_url;
     if (targetUrl.includes('profile.php')) {
@@ -198,7 +184,6 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       targetUrl = targetUrl.endsWith('/') ? `${targetUrl}videos/` : `${targetUrl}/videos/`;
     }
 
-    // Ripristinato waitUntil: 'domcontentloaded' originale
     await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
 
     for (let i = 0; i < 3; i++) {
@@ -249,7 +234,6 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       const testoLower = item.fullText.toLowerCase();
       let partiteCandidate = [...partiteSquadra];
 
-      // LIVELLO 1: AVVERSARIA
       let avversarioTrovato = null;
       for (const avversario of avversariStessoGirone) {
         const nomeAvvLower = avversario.nome.toLowerCase();
@@ -270,7 +254,6 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
         );
       }
 
-      // LIVELLO 2: GIORNATA
       if (partiteCandidate.length !== 1) {
         const numeroGiornataEstratto = estraiNumeroGiornata(item.fullText);
         if (numeroGiornataEstratto) {
@@ -284,7 +267,6 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
         }
       }
 
-      // LIVELLO 3: DATA
       let partitaScelta = null;
 
       if (partiteCandidate.length === 1) {
