@@ -26,21 +26,68 @@ function classificaTitoloVideo(testo) {
   if (!testo) return null;
   const t = testo.toLowerCase();
 
-  // 0. ESCLUSIONI PREVENTIVE (Allenamenti, sponsor, presentazioni roster/giocatori, mercato, conferme)
+  // 0. ESCLUSIONI PREVENTIVE (Solo reali eventi di mercato, giovanili e sponsorizzazioni pure)
   if (
     t.includes('allenament') || t.includes('training') ||
     t.includes('dietro le quinte') || t.includes('backstage') ||
     t.includes('minibasket') || t.includes('giovanil') ||
-    t.includes('scuola basket') || t.includes('sponsor') ||
+    t.includes('scuola basket') || 
     t.includes('presentazione del main') || t.includes('presentazione maglie') ||
-    t.includes('presentazione roster') || t.includes('presentazione di') ||
-    t.includes('conferme') || t.includes('conferma') ||
-    t.includes('roster') || t.includes('nuovo acquisto') ||
+    t.includes('presentazione roster') || t.includes('presentazione squadra') ||
+    t.includes('presentazione giocatore') || t.includes('presentazione acquisto') ||
+    t.includes('conferme roster') || t.includes('nuovo acquisto') ||
     t.includes('nuovo giocatore') || t.includes('benvenuto') ||
     t.includes('firmato') || t.includes('ingaggio')
   ) {
     return null;
   }
+
+  // 1. HIGHLIGHTS
+  if (
+    t.includes('highlight') || t.includes('sintesi') ||
+    t.includes('azioni salienti') || t.includes('top 10') ||
+    t.includes('best of') || t.includes('mini film') ||
+    (t.includes('canestri') && !t.includes('minibasket'))
+  ) {
+    return 'Highlights';
+  }
+
+  // 2. PREPARTITA (Include ora "lavagna tecnica", "prossima avversaria", "racconta la", ecc.)
+  if (
+    t.includes('prepartita') || t.includes('pre-partita') ||
+    t.includes('pre gara') || t.includes('anteprima') ||
+    t.includes('presentazione gara') || t.includes('alla vigilia') ||
+    t.includes('verso ') || t.includes('in vista') ||
+    t.includes('guardiamo al match') || t.includes('presenta il match') ||
+    t.includes('presenta la sfida') || t.includes('presenta la gara') ||
+    t.includes('presenta la partita') || t.includes('affronterà') ||
+    t.includes('lavagna tecnica') || t.includes('prossima avversaria') ||
+    t.includes('prossimo avversario') || t.includes('scouting') ||
+    t.includes('racconta la') || t.includes('analisi del match')
+  ) {
+    return 'Prepartita';
+  }
+
+  // 3. POST-PARTITA
+  if (
+    t.includes('postpartita') || t.includes('post-partita') ||
+    t.includes('post gara') || t.includes('dopo gara') ||
+    t.includes('dopo match') || t.includes('commento al match') ||
+    t.includes('commenta la vittoria') || t.includes('commenta la sconfitta') ||
+    (t.includes('conferenza') && !t.includes('roster') && !t.includes('sponsor')) ||
+    (t.includes('sala stampa') && !t.includes('presentazione roster'))
+  ) {
+    return 'Post-Partita';
+  }
+
+  // 4. CONTROLLI DI RIPIEGO
+  if (t.includes('coach') || t.includes('parole') || t.includes('intervista')) {
+    if (t.includes('dopo la gara') || t.includes('vittoria') || t.includes('sconfitta')) return 'Post-Partita';
+    if (t.includes('sfida') || t.includes('match') || t.includes('prossima gara') || t.includes('prossimo match') || t.includes('domenica')) return 'Prepartita';
+  }
+
+  return null;
+}
 
   // 1. HIGHLIGHTS
   if (
