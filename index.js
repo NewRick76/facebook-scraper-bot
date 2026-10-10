@@ -52,7 +52,7 @@ function classificaTitoloVideo(testo) {
     return 'Highlights';
   }
 
-  // 2. PREPARTITA (Include ora "lavagna tecnica", "prossima avversaria", "racconta la", ecc.)
+  // 2. PREPARTITA (Inclusi i nuovi termini per Mens Sana e analisi avversari)
   if (
     t.includes('prepartita') || t.includes('pre-partita') ||
     t.includes('pre gara') || t.includes('anteprima') ||
@@ -84,49 +84,6 @@ function classificaTitoloVideo(testo) {
   if (t.includes('coach') || t.includes('parole') || t.includes('intervista')) {
     if (t.includes('dopo la gara') || t.includes('vittoria') || t.includes('sconfitta')) return 'Post-Partita';
     if (t.includes('sfida') || t.includes('match') || t.includes('prossima gara') || t.includes('prossimo match') || t.includes('domenica')) return 'Prepartita';
-  }
-
-  return null;
-}
-
-  // 1. HIGHLIGHTS
-  if (
-    t.includes('highlight') || t.includes('sintesi') ||
-    t.includes('azioni salienti') || t.includes('top 10') ||
-    t.includes('best of') || t.includes('mini film') ||
-    (t.includes('canestri') && !t.includes('minibasket'))
-  ) {
-    return 'Highlights';
-  }
-
-  // 2. PREPARTITA
-  if (
-    t.includes('prepartita') || t.includes('pre-partita') ||
-    t.includes('pre gara') || t.includes('anteprima') ||
-    t.includes('presentazione gara') || t.includes('alla vigilia') ||
-    t.includes('verso ') || t.includes('in vista') ||
-    t.includes('guardiamo al match') || t.includes('presenta il match') ||
-    t.includes('affronterà') || t.includes('presenta la sfida')
-  ) {
-    return 'Prepartita';
-  }
-
-  // 3. POST-PARTITA
-  if (
-    t.includes('postpartita') || t.includes('post-partita') ||
-    t.includes('post gara') || t.includes('dopo gara') ||
-    t.includes('dopo match') || t.includes('commento al match') ||
-    t.includes('commenta la vittoria') || t.includes('commenta la sconfitta') ||
-    (t.includes('conferenza') && !t.includes('presentazione') && !t.includes('roster')) ||
-    (t.includes('sala stampa') && !t.includes('presentazione'))
-  ) {
-    return 'Post-Partita';
-  }
-
-  // 4. CONTROLLI DI RIPIEGO
-  if (t.includes('coach') || t.includes('parole')) {
-    if (t.includes('dopo la gara') || t.includes('vittoria') || t.includes('sconfitta')) return 'Post-Partita';
-    if (t.includes('sfida') || t.includes('match') || t.includes('prossima gara') || t.includes('prossimo match')) return 'Prepartita';
   }
 
   return null;
@@ -185,7 +142,6 @@ async function scansionaSquadra(squadra, squadre, tutteLePartite) {
 
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    // Blocchiamo solo immagini, font e video pesanti per far funzionare gli script di FB
     await page.setRequestInterception(true);
     page.on('request', (req) => {
       const type = req.resourceType();
@@ -344,7 +300,6 @@ app.get('/scrape', async (req, res) => {
   }
 });
 
-// Endpoint di emergenza per resettare il lock in caso di blocchi anomali
 app.get('/reset-lock', (req, res) => {
   isScrapingRunning = false;
   res.json({ message: "Lock dello scraping resettato con successo!" });
