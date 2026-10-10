@@ -30,7 +30,7 @@ function classificaTitoloVideo(testo) {
   if (!testo) return null;
   const t = testo.toLowerCase();
 
-  // 0. ESCLUSIONI PREVENTIVE (Mercato, giovanili, maglie, sponsor)
+  // 0. ESCLUSIONI PREVENTIVE
   if (
     t.includes('allenament') || t.includes('training') ||
     t.includes('dietro le quinte') || t.includes('backstage') ||
@@ -178,21 +178,32 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
 
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    let targetUrl = squadra.facebook_page_url;
+    // Ripristiniamo l'intercettazione risorse identica a prima
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      const type = req.resourceType();
+      if (['image', 'font', 'media', 'stylesheet'].includes(type)) {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
 
-    // Normalizziamo l'URL rimuovendo il percorso /videos/ che spesso viene bloccato senza login
+    let targetUrl = squadra.facebook_page_url;
     if (targetUrl.includes('profile.php')) {
-      targetUrl = targetUrl.replace('&sk=videos', '').replace('?sk=videos', '');
+      targetUrl = targetUrl.includes('?') 
+        ? `${targetUrl}&sk=videos` 
+        : `${targetUrl}?sk=videos`;
     } else {
-      targetUrl = targetUrl.replace(/\/videos\/?$/, '/');
+      targetUrl = targetUrl.endsWith('/') ? `${targetUrl}videos/` : `${targetUrl}/videos/`;
     }
 
-    // Carichiamo la pagina principale del profilo
-    await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 25000 });
+    // Ripristinato waitUntil: 'domcontentloaded' originale
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
 
     for (let i = 0; i < 3; i++) {
       await withTimeout(page.evaluate(() => window.scrollBy(0, 1200)), 2000).catch(() => {});
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((r) => setTimeout(r, 400));
     }
 
     const rawItems = await withTimeout(
@@ -202,11 +213,11 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
 
         links.forEach((a) => {
           const href = a.href || '';
-          const isVideo = href.includes('/videos/') || href.includes('/watch/?v=') || href.includes('/reel/') || href.includes('watch');
+          const isVideo = href.includes('/videos/') || href.includes('/watch/?v=') || href.includes('/reel/');
           const isNotGeneric = href !== 'https://www.facebook.com/watch/' && !href.endsWith('/videos/');
 
           if (isVideo && isNotGeneric) {
-            const article = a.closest('div[role="article"]') || a.closest('div[data-s2n]') || a.parentElement;
+            const article = a.closest('div[role="article"]');
             const parentText = article?.innerText || a.innerText || '';
             const timeEl = article?.querySelector('time');
             const postDate = timeEl ? timeEl.getAttribute('datetime') : null;
@@ -222,8 +233,6 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       }),
       8000
     ).catch(() => []);
-
-    console.log(`🔍 [${squadra.nome}] Link video grezzi trovati: ${rawItems.length}`);
 
     const avversariStessoGirone = squadra.girone 
       ? tutteLeSquadre.filter(s => s.girone === squadra.girone && s.id_squadra !== squadra.id_squadra)
