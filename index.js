@@ -94,17 +94,48 @@ function withTimeout(promise, ms) {
   return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
 }
 
-async function scansionaSquadra(browser, squadra, squadre, tutteLePartite) {
+// Funzione di pulizia radicale per eliminare i processi residui di Chromium
+async function killBrowser(browser) {
+  if (!browser) return;
+  try {
+    await browser.close().catch(() => {});
+  } catch (e) {}
+  
+  try {
+    const proc = browser.process();
+    if (proc && !proc.killed) {
+      proc.kill('SIGKILL');
+    }
+  } catch (e) {}
+}
+
+async function scansionaSquadra(squadra, squadre, tutteLePartite) {
+  let browser = null;
   let page = null;
 
   try {
+    // Avviamo un browser dedicato e isolato per questa singola squadra
+    browser = await puppeteer.launch({
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--disable-gpu',
+        '--disable-background-networking'
+      ]
+    });
+
     page = await browser.newPage();
     page.setDefaultTimeout(8000);
     page.setDefaultNavigationTimeout(8000);
 
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
 
-    // Blocco delle risorse pesante per risparmiare memoria
+    // Intercettazione aggressiva per non sprecare RAM caricando immagini o fogli di stile
     await page.setRequestInterception(true);
     page.on('request', (req) => {
       const type = req.resourceType();
@@ -123,7 +154,7 @@ async function scansionaSquadra(browser, squadra, squadre, tutteLePartite) {
 
     for (let i = 0; i < 2; i++) {
       await withTimeout(page.evaluate(() => window.scrollBy(0, 1000)), 2000).catch(() => {});
-      await new Promise((r) => setTimeout(r, 300));
+      await new Promise((r) => setTimeout(r, 200));
     }
 
     const rawItems = await withTimeout(
@@ -214,9 +245,8 @@ async function scansionaSquadra(browser, squadra, squadre, tutteLePartite) {
     }
 
   } finally {
-    if (page) {
-      await page.close().catch(() => {});
-    }
+    if (page) await page.close().catch(() => {});
+    await killBrowser(browser);
   }
 }
 
@@ -228,30 +258,11 @@ app.get('/scrape', async (req, res) => {
   isScrapingRunning = true;
   res.json({ message: "Scraping avviato in background..." });
 
-  let browser = null;
-
   try {
     const { data: squadre } = await supabase.from('squadre').select('id_squadra, nome, facebook_page_url');
     const { data: tutteLePartite } = await supabase.from('partite').select('id_partita, id_squadra_casa, id_squadra_ospite, data_partita, id_giornata');
 
     if (!squadre || !tutteLePartite) return;
-
-    // Launch Chromium con opzioni ultra-strette per la memoria RAM
-    browser = await puppeteer.launch({
-      headless: 'new',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu',
-        '--disable-speech-api',
-        '--disable-background-networking',
-        '--js-flags="--max-old-space-size=256"'
-      ]
-    });
 
     let counter = 0;
     for (const squadra of squadre) {
@@ -261,13 +272,13 @@ app.get('/scrape', async (req, res) => {
       console.log(`Scansione (${counter}/${squadre.length}) per: ${squadra.facebook_page_url}`);
 
       try {
-        await withTimeout(scansionaSquadra(browser, squadra, squadre, tutteLePartite), 20000);
+        await withTimeout(scansionaSquadra(squadra, squadre, tutteLePartite), 18000);
       } catch (err) {
         console.error(`⚠️ Salto ${squadra.facebook_page_url}: ${err.message}`);
       }
 
-      // Pausa di pulizia RAM
-      await new Promise((r) => setTimeout(r, 1000));
+      // Pausa di respiro e Garbage Collection Node.js tra una squadra e l'altra
+      await new Promise((r) => setTimeout(r, 800));
       if (global.gc) global.gc();
     }
 
@@ -275,9 +286,6 @@ app.get('/scrape', async (req, res) => {
   } catch (err) {
     console.error('Errore generale:', err);
   } finally {
-    if (browser) {
-      await browser.close().catch(() => {});
-    }
     isScrapingRunning = false;
   }
 });
