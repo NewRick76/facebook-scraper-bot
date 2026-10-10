@@ -30,7 +30,6 @@ function classificaTitoloVideo(testo) {
   if (!testo) return null;
   const t = testo.toLowerCase();
 
-  // 0. ESCLUSIONI PREVENTIVE
   if (
     t.includes('allenament') || t.includes('training') ||
     t.includes('dietro le quinte') || t.includes('backstage') ||
@@ -46,7 +45,6 @@ function classificaTitoloVideo(testo) {
     return null;
   }
 
-  // 1. HIGHLIGHTS
   if (
     t.includes('highlight') || t.includes('sintesi') ||
     t.includes('azioni salienti') || t.includes('top 10') ||
@@ -56,7 +54,6 @@ function classificaTitoloVideo(testo) {
     return 'Highlights';
   }
 
-  // 2. POST-PARTITA
   if (
     t.includes('postpartita') || t.includes('post-partita') ||
     t.includes('post gara') || t.includes('dopo gara') ||
@@ -71,7 +68,6 @@ function classificaTitoloVideo(testo) {
     return 'Post-Partita';
   }
 
-  // 3. PREPARTITA
   if (
     t.includes('prepartita') || t.includes('pre-partita') ||
     t.includes('pre gara') || t.includes('anteprima') ||
@@ -87,7 +83,6 @@ function classificaTitoloVideo(testo) {
     return 'Prepartita';
   }
 
-  // 4. CONTROLLI DI RIPIEGO
   if (t.includes('coach') || t.includes('parole') || t.includes('intervista')) {
     if (t.includes('dopo la gara') || t.includes('vittoria') || t.includes('sconfitta') || t.includes('al termine')) return 'Post-Partita';
     if (t.includes('sfida') || t.includes('match') || t.includes('prossima gara') || t.includes('prossimo match') || t.includes('domenica')) return 'Prepartita';
@@ -193,7 +188,6 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       targetUrl = targetUrl.endsWith('/') ? `${targetUrl}videos/` : `${targetUrl}/videos/`;
     }
 
-    console.log(`🌐 [DEBUG] Navigazione verso URL: ${targetUrl}`);
     await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
 
     for (let i = 0; i < 3; i++) {
@@ -201,7 +195,7 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       await new Promise((r) => setTimeout(r, 400));
     }
 
-    const rawItems = await withTimeout(
+    const rawItemsGrezzi = await withTimeout(
       page.evaluate(() => {
         const results = [];
         const links = Array.from(document.querySelectorAll('a'));
@@ -227,17 +221,35 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
         return results;
       }),
       8000
-    ).catch((err) => {
-      console.error(`❌ [DEBUG] Errore in page.evaluate per ${squadra.nome}:`, err.message);
-      return [];
-    });
+    ).catch(() => []);
 
-    console.log(`🔍 [DEBUG] ${squadra.nome}: Trovati ${rawItems.length} elementi video grezzi nel DOM.`);
-    if (rawItems.length > 0) {
-      rawItems.forEach((item, idx) => {
-        console.log(`   👉 [Video ${idx+1}] URL: ${item.url} | Testo estratto: "${item.fullText.replace(/\n/g, ' ').substring(0, 100)}..."`);
-      });
+    // RAGGRUPPAMENTO PER URL: Uniamo la durata (es "2:48") al testo descrittivo del post
+    const itemsMap = new Map();
+
+    for (const item of rawItemsGrezzi) {
+      const matchTempo = item.fullText.trim().match(/^(\d{1,2}:\d{2})/);
+      const eMinutaggio = !!matchTempo;
+
+      if (!itemsMap.has(item.url)) {
+        itemsMap.set(item.url, {
+          url: item.url,
+          fullText: eMinutaggio ? '' : item.fullText,
+          durata: eMinutaggio ? matchTempo[1] : null,
+          postDate: item.postDate
+        });
+      } else {
+        const esistente = itemsMap.get(item.url);
+        if (eMinutaggio) {
+          esistente.durata = matchTempo[1];
+        } else if (item.fullText.length > esistente.fullText.length) {
+          esistente.fullText = item.fullText;
+        }
+      }
     }
+
+    const rawItems = Array.from(itemsMap.values());
+
+    console.log(`🔍 [DEBUG] ${squadra.nome}: Trovati ${rawItems.length} video univoci.`);
 
     const avversariStessoGirone = squadra.girone 
       ? tutteLeSquadre.filter(s => s.girone === squadra.girone && s.id_squadra !== squadra.id_squadra)
@@ -249,12 +261,7 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
 
     for (const item of rawItems) {
       const categoriaTitolo = classificaTitoloVideo(item.fullText);
-      if (!categoriaTitolo) {
-        console.log(`   ❌ [SCARTATO] Testo non classificabile come Highlights/Pre/Post: "${item.fullText.replace(/\n/g, ' ').substring(0, 60)}..."`);
-        continue;
-      }
-
-      console.log(`   ✅ [CLASSIFICATO: ${categoriaTitolo}] per URL: ${item.url}`);
+      if (!categoriaTitolo) continue;
 
       const testoLower = item.fullText.toLowerCase();
       let partiteCandidate = [...partiteSquadra];
@@ -274,18 +281,14 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       }
 
       if (avversarioTrovato) {
-        console.log(`      🎯 Avversaria identificata nel testo: ${avversarioTrovato.nome}`);
         partiteCandidate = partiteCandidate.filter(
           p => p.id_squadra_casa === avversarioTrovato.id_squadra || p.id_squadra_ospite === avversarioTrovato.id_squadra
         );
-      } else {
-        console.log(`      ⚠️ Nessuna avversaria specifica riconosciuta nel testo.`);
       }
 
       if (partiteCandidate.length !== 1) {
         const numeroGiornataEstratto = estraiNumeroGiornata(item.fullText);
         if (numeroGiornataEstratto) {
-          console.log(`      📅 Giornata estratta dal testo: ${numeroGiornataEstratto}`);
           const filtratePerGiornata = partiteCandidate.filter(
             p => parseInt(p.id_giornata, 10) === numeroGiornataEstratto
           );
@@ -306,13 +309,9 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
           return differenzaGiorni(dataPost, new Date(a.data_partita)) - differenzaGiorni(dataPost, new Date(b.data_partita));
         });
         partitaScelta = partiteCandidate[0];
-        console.log(`      🔀 Più partite candidate, scelta la più vicina per data (ID Partita: ${partitaScelta.id_partita})`);
       }
 
-      if (!partitaScelta) {
-        console.log(`      ❌ Impossibile associare il video ad alcuna partita.`);
-        continue;
-      }
+      if (!partitaScelta) continue;
 
       const { error: dbError } = await supabase.from('highlights_partite').upsert(
         {
@@ -320,6 +319,7 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
           id_squadra_autore: squadra.id_squadra,
           video_url: item.url,
           titolo: categoriaTitolo,
+          durata: item.durata, // <--- SALVIAMO LA DURATA ESTRATTA (es. "2:48")
           piattaforma: 'facebook'
         },
         { onConflict: 'video_url' }
@@ -328,7 +328,7 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       if (dbError) {
         console.error(`      ❌ Errore Supabase UPSERT:`, dbError.message);
       } else {
-        console.log(`      🎉 SALVATAGGIO OK -> [${categoriaTitolo}] Partita ID ${partitaScelta.id_partita} (Giornata ${partitaScelta.id_giornata}): ${item.url}`);
+        console.log(`      🎉 SALVATAGGIO OK -> [${categoriaTitolo}] (Durata: ${item.durata || 'N/D'}) Partita ID ${partitaScelta.id_partita}: ${item.url}`);
       }
     }
 
@@ -355,13 +355,13 @@ async function eseguiScrapingInBackground(offset, limit) {
       if (!squadra.facebook_page_url) continue;
 
       console.log(`\n========================================`);
-      console.log(`Scansione (${counter}/${tutteSquadre.length}) per: ${squadra.nome} (${squadra.facebook_page_url})`);
+      console.log(`Scansione (${counter}/${tutteSquadre.length}) per: ${squadra.nome}`);
       console.log(`========================================`);
 
       try {
         await withTimeout(scansionaSquadra(squadra, tutteSquadre, tutteLePartite), 45000);
       } catch (err) {
-        console.error(`⚠️ Salto ${squadra.nome} per timeout o errore: ${err.message}`);
+        console.error(`⚠️ Salto ${squadra.nome}: ${err.message}`);
       }
 
       await new Promise((r) => setTimeout(r, 1000));
