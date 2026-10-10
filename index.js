@@ -96,7 +96,6 @@ function classificaTitoloVideo(testo) {
   return null;
 }
 
-// Estrazione del numero di giornata dal testo (es: "1° giornata", "giornata 2", "prima giornata")
 function estraiNumeroGiornata(testo) {
   if (!testo) return null;
   const t = testo.toLowerCase();
@@ -109,7 +108,6 @@ function estraiNumeroGiornata(testo) {
     'diciannovesima': 19, 'ventesima': 20
   };
 
-  // 1. Cerca pattern tipo "1° giornata", "1a giornata", "giornata 1", "giornata #1"
   const regexNumerica = /(?:giornata\s*n?°?\s*(\d+))|(?:(\d+)[°ªa]?\s*giornata)/i;
   const matchNum = t.match(regexNumerica);
   if (matchNum) {
@@ -117,7 +115,6 @@ function estraiNumeroGiornata(testo) {
     if (num) return parseInt(num, 10);
   }
 
-  // 2. Cerca parole come "prima giornata", "seconda giornata"
   for (const [parola, num] of Object.entries(mappaParoleNumero)) {
     if (t.includes(`${parola} giornata`)) {
       return num;
@@ -175,8 +172,8 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
     });
 
     page = await browser.newPage();
-    page.setDefaultTimeout(15000);
-    page.setDefaultNavigationTimeout(15000);
+    page.setDefaultTimeout(12000);
+    page.setDefaultNavigationTimeout(12000);
 
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
@@ -199,11 +196,11 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       targetUrl = targetUrl.endsWith('/') ? `${targetUrl}videos/` : `${targetUrl}/videos/`;
     }
 
-    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 12000 });
 
     for (let i = 0; i < 3; i++) {
-      await withTimeout(page.evaluate(() => window.scrollBy(0, 1200)), 3000).catch(() => {});
-      await new Promise((r) => setTimeout(r, 600));
+      await withTimeout(page.evaluate(() => window.scrollBy(0, 1200)), 2500).catch(() => {});
+      await new Promise((r) => setTimeout(r, 400));
     }
 
     const rawItems = await withTimeout(
@@ -231,15 +228,13 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
         });
         return results;
       }),
-      6000
+      5000
     ).catch(() => []);
 
-    // Squadre dello stesso girone per il matching iniziale
     const avversariStessoGirone = squadra.girone 
       ? tutteLeSquadre.filter(s => s.girone === squadra.girone && s.id_squadra !== squadra.id_squadra)
       : tutteLeSquadre.filter(s => s.id_squadra !== squadra.id_squadra);
 
-    // Tutte le partite riguardanti la squadra scansionata
     const partiteSquadra = tutteLePartite.filter(
       p => p.id_squadra_casa === squadra.id_squadra || p.id_squadra_ospite === squadra.id_squadra
     );
@@ -251,11 +246,8 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       const testoLower = item.fullText.toLowerCase();
       let partiteCandidate = [...partiteSquadra];
 
-      // =========================================================================
-      // LIVELLO 1: MATCHING PER NOME DELL'AVVERSARIA (nel proprio girone)
-      // =========================================================================
+      // LIVELLO 1: AVVERSARIA
       let avversarioTrovato = null;
-
       for (const avversario of avversariStessoGirone) {
         const nomeAvvLower = avversario.nome.toLowerCase();
         const aliasList = NOMI_SQUADRE_MAP[nomeAvvLower] || [];
@@ -275,9 +267,7 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
         );
       }
 
-      // =========================================================================
-      // LIVELLO 2: MATCHING PER NUMERO DI GIORNATA (se ambiguo o non trovato)
-      // =========================================================================
+      // LIVELLO 2: GIORNATA
       if (partiteCandidate.length !== 1) {
         const numeroGiornataEstratto = estraiNumeroGiornata(item.fullText);
         if (numeroGiornataEstratto) {
@@ -291,9 +281,7 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
         }
       }
 
-      // =========================================================================
-      // LIVELLO 3: MATCHING PER DATA PARTITA / POST (scelta della più vicina)
-      // =========================================================================
+      // LIVELLO 3: DATA
       let partitaScelta = null;
 
       if (partiteCandidate.length === 1) {
@@ -328,17 +316,8 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
   }
 }
 
-app.get('/scrape', async (req, res) => {
-  if (isScrapingRunning) {
-    return res.status(429).json({ message: "Un processo di scraping è già in esecuzione!" });
-  }
-
-  const offset = parseInt(req.query.offset) || 0;
-  const limit = parseInt(req.query.limit) || 56;
-
-  isScrapingRunning = true;
-  res.json({ message: `Scraping avviato per blocco da index ${offset} (max ${limit} squadre)...` });
-
+// Funzione interna di elaborazione asincrona
+async function eseguiScrapingInBackground(offset, limit) {
   try {
     const { data: tutteSquadre } = await supabase.from('squadre').select('id_squadra, nome, facebook_page_url, girone');
     const { data: tutteLePartite } = await supabase.from('partite').select('id_partita, id_squadra_casa, id_squadra_ospite, data_partita, id_giornata');
@@ -355,21 +334,41 @@ app.get('/scrape', async (req, res) => {
       console.log(`Scansione (${counter}/${tutteSquadre.length}) per: ${squadra.nome} (${squadra.facebook_page_url})`);
 
       try {
-        await withTimeout(scansionaSquadra(squadra, tutteSquadre, tutteLePartite), 35000);
+        await withTimeout(scansionaSquadra(squadra, tutteSquadre, tutteLePartite), 25000);
       } catch (err) {
-        console.error(`⚠️ Salto ${squadra.facebook_page_url}: ${err.message}`);
+        console.error(`⚠️ Salto ${squadra.nome}: ${err.message}`);
       }
 
-      await new Promise((r) => setTimeout(r, 600));
+      await new Promise((r) => setTimeout(r, 400));
       if (global.gc) global.gc();
     }
 
-    console.log(`Scraping completato per il blocco ${offset} - ${offset + squadreSelezionate.length}!`);
+    console.log(`🎉 Scraping completato con successo per il blocco ${offset} - ${offset + squadreSelezionate.length}!`);
   } catch (err) {
-    console.error('Errore generale:', err);
+    console.error('Errore durante lo scraping in background:', err);
   } finally {
     isScrapingRunning = false;
   }
+}
+
+app.get('/scrape', (req, res) => {
+  if (isScrapingRunning) {
+    return res.status(429).json({ message: "Un processo di scraping è già in esecuzione!" });
+  }
+
+  const offset = parseInt(req.query.offset) || 0;
+  const limit = parseInt(req.query.limit) || 15;
+
+  isScrapingRunning = true;
+
+  // Risposta IMMEDIATA al client per evitare qualsiasi timeout di rete
+  res.json({ 
+    status: "ok", 
+    message: `Scraping avviato in background per il blocco ${offset} - ${offset + limit}.` 
+  });
+
+  // Avvio dello scraping in modalità asincrona
+  eseguiScrapingInBackground(offset, limit);
 });
 
 app.get('/reset-lock', (req, res) => {
