@@ -223,15 +223,6 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       8000
     ).catch(() => []);
 
-    // Creiamo una mappa di supporto per estrarre la durata associata allo stesso URL senza rovinare i testi dei post
-    const durateMap = {};
-    for (const item of rawItems) {
-      const match = item.fullText.trim().match(/^(\d{1,2}:\d{2})$/);
-      if (match) {
-        durateMap[item.url] = match[1];
-      }
-    }
-
     console.log(`🔍 [DEBUG] ${squadra.nome}: Trovati ${rawItems.length} elementi grezzi.`);
 
     const avversariStessoGirone = squadra.girone 
@@ -243,6 +234,10 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
     );
 
     for (const item of rawItems) {
+      // Controlliamo se l'elemento corrente è solo il minutaggio (es. "2:48")
+      const matchTempo = item.fullText.trim().match(/^(\d{1,2}:\d{2})$/);
+      const durataTrovata = matchTempo ? matchTempo[1] : null;
+
       const categoriaTitolo = classificaTitoloVideo(item.fullText);
       if (!categoriaTitolo) continue;
 
@@ -296,17 +291,20 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
 
       if (!partitaScelta) continue;
 
-      const durataTrovata = durateMap[item.url] || null;
+      const payloadUpsert = {
+        id_partita: partitaScelta.id_partita,
+        id_squadra_autore: squadra.id_squadra,
+        video_url: item.url,
+        titolo: categoriaTitolo,
+        piattaforma: 'facebook'
+      };
+
+      if (durataTrovata) {
+        payloadUpsert.durata = durataTrovata;
+      }
 
       const { error: dbError } = await supabase.from('highlights_partite').upsert(
-        {
-          id_partita: partitaScelta.id_partita,
-          id_squadra_autore: squadra.id_squadra,
-          video_url: item.url,
-          titolo: categoriaTitolo,
-          durata: durataTrovata,
-          piattaforma: 'facebook'
-        },
+        payloadUpsert,
         { onConflict: 'video_url' }
       );
 
