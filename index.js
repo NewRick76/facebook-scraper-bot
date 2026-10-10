@@ -17,7 +17,11 @@ const NOMI_SQUADRE_MAP = {
   'agrigento': ['agrigento', 'moncada'],
   'omegna': ['omegna', 'fulgor', 'paffoni'],
   'imola': ['imola', 'andrea costa'],
-  'roma': ['roma', 'virtus roma']
+  'virtus gvm roma 1960': ['virtus roma', 'roma 1960', 'virtus gvm'],
+  'luiss roma': ['luiss', 'luiss roma'],
+  'cestistica san severo': ['san severo', 'sansevero', 'cestistica san severo'],
+  'faenza': ['faenza', 'raggisolaris', 'tema sinergie'],
+  'siena': ['siena', 'mens sana']
 };
 
 let isScrapingRunning = false;
@@ -26,7 +30,7 @@ function classificaTitoloVideo(testo) {
   if (!testo) return null;
   const t = testo.toLowerCase();
 
-  // 0. ESCLUSIONI PREVENTIVE (Solo reali eventi di mercato, giovanili e sponsorizzazioni pure)
+  // 0. ESCLUSIONI PREVENTIVE (Mercato, giovanili, maglie, sponsor)
   if (
     t.includes('allenament') || t.includes('training') ||
     t.includes('dietro le quinte') || t.includes('backstage') ||
@@ -52,7 +56,7 @@ function classificaTitoloVideo(testo) {
     return 'Highlights';
   }
 
-  // 2. PREPARTITA (Inclusi i nuovi termini per Mens Sana e analisi avversari)
+  // 2. PREPARTITA
   if (
     t.includes('prepartita') || t.includes('pre-partita') ||
     t.includes('pre gara') || t.includes('anteprima') ||
@@ -89,6 +93,37 @@ function classificaTitoloVideo(testo) {
   return null;
 }
 
+// Estrazione del numero di giornata dal testo (es: "1° giornata", "giornata 2", "prima giornata")
+function estraiNumeroGiornata(testo) {
+  if (!testo) return null;
+  const t = testo.toLowerCase();
+
+  const mappaParoleNumero = {
+    'prima': 1, 'seconda': 2, 'terza': 3, 'quarta': 4, 'quinta': 5,
+    'sesta': 6, 'settima': 7, 'ottava': 8, 'nona': 9, 'decima': 10,
+    'undicesima': 11, 'dodicesima': 12, 'tredicesima': 13, 'quattordicesima': 14,
+    'quindicesima': 15, 'sedicesima': 16, 'diciassettesima': 17, 'diciottesima': 18,
+    'diciannovesima': 19, 'ventesima': 20
+  };
+
+  // 1. Cerca pattern tipo "1° giornata", "1a giornata", "giornata 1", "giornata #1"
+  const regexNumerica = /(?:giornata\s*n?°?\s*(\d+))|(?:(\d+)[°ªa]?\s*giornata)/i;
+  const matchNum = t.match(regexNumerica);
+  if (matchNum) {
+    const num = matchNum[1] || matchNum[2];
+    if (num) return parseInt(num, 10);
+  }
+
+  // 2. Cerca parole come "prima giornata", "seconda giornata"
+  for (const [parola, num] of Object.entries(mappaParoleNumero)) {
+    if (t.includes(`${parola} giornata`)) {
+      return num;
+    }
+  }
+
+  return null;
+}
+
 function differenzaGiorni(d1, d2) {
   const diffTime = Math.abs(d1 - d2);
   return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
@@ -116,7 +151,7 @@ async function killBrowser(browser) {
   } catch (e) {}
 }
 
-async function scansionaSquadra(squadra, squadre, tutteLePartite) {
+async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
   let browser = null;
   let page = null;
 
@@ -152,9 +187,14 @@ async function scansionaSquadra(squadra, squadre, tutteLePartite) {
       }
     });
 
-    const targetUrl = squadra.facebook_page_url.endsWith('/')
-      ? `${squadra.facebook_page_url}videos/`
-      : `${squadra.facebook_page_url}/videos/`;
+    let targetUrl = squadra.facebook_page_url;
+    if (targetUrl.includes('profile.php')) {
+      targetUrl = targetUrl.includes('?') 
+        ? `${targetUrl}&sk=videos` 
+        : `${targetUrl}?sk=videos`;
+    } else {
+      targetUrl = targetUrl.endsWith('/') ? `${targetUrl}videos/` : `${targetUrl}/videos/`;
+    }
 
     await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
@@ -191,6 +231,12 @@ async function scansionaSquadra(squadra, squadre, tutteLePartite) {
       6000
     ).catch(() => []);
 
+    // Squadre dello stesso girone per il matching iniziale
+    const avversariStessoGirone = squadra.girone 
+      ? tutteLeSquadre.filter(s => s.girone === squadra.girone && s.id_squadra !== squadra.id_squadra)
+      : tutteLeSquadre.filter(s => s.id_squadra !== squadra.id_squadra);
+
+    // Tutte le partite riguardanti la squadra scansionata
     const partiteSquadra = tutteLePartite.filter(
       p => p.id_squadra_casa === squadra.id_squadra || p.id_squadra_ospite === squadra.id_squadra
     );
@@ -200,38 +246,61 @@ async function scansionaSquadra(squadra, squadre, tutteLePartite) {
       if (!categoriaTitolo) continue;
 
       const testoLower = item.fullText.toLowerCase();
-      let partitaScelta = null;
+      let partiteCandidate = [...partiteSquadra];
 
-      for (const avversario of squadre) {
-        if (avversario.id_squadra === squadra.id_squadra) continue;
+      // =========================================================================
+      // LIVELLO 1: MATCHING PER NOME DELL'AVVERSARIA (nel proprio girone)
+      // =========================================================================
+      let avversarioTrovato = null;
 
-        const nomeAvversarioLower = avversario.nome.toLowerCase();
-        const aliasList = NOMI_SQUADRE_MAP[nomeAvversarioLower] || [nomeAvversarioLower];
+      for (const avversario of avversariStessoGirone) {
+        const nomeAvvLower = avversario.nome.toLowerCase();
+        const aliasList = NOMI_SQUADRE_MAP[nomeAvvLower] || [];
+        const paroleSignificative = nomeAvvLower.split(' ').filter(w => w.length > 3 && !['basket', 'pallacanestro', 'virtus', 'real'].includes(w));
+        
+        const terminiDaCercare = [nomeAvvLower, ...aliasList, ...paroleSignificative];
 
-        if (aliasList.some(alias => testoLower.includes(alias))) {
-          const matchScontri = partiteSquadra.filter(
-            p => p.id_squadra_casa === avversario.id_squadra || p.id_squadra_ospite === avversario.id_squadra
-          );
-
-          if (matchScontri.length === 1) {
-            partitaScelta = matchScontri[0];
-          } else if (matchScontri.length > 1) {
-            const dataPost = new Date(item.postDate);
-            matchScontri.sort((a, b) => {
-              return differenzaGiorni(dataPost, new Date(a.data_partita)) - differenzaGiorni(dataPost, new Date(b.data_partita));
-            });
-            partitaScelta = matchScontri[0];
-          }
+        if (terminiDaCercare.some(termine => testoLower.includes(termine))) {
+          avversarioTrovato = avversario;
           break;
         }
       }
 
-      if (!partitaScelta && partiteSquadra.length > 0) {
+      if (avversarioTrovato) {
+        partiteCandidate = partiteCandidate.filter(
+          p => p.id_squadra_casa === avversarioTrovato.id_squadra || p.id_squadra_ospite === avversarioTrovato.id_squadra
+        );
+      }
+
+      // =========================================================================
+      // LIVELLO 2: MATCHING PER NUMERO DI GIORNATA (se ambiguo o non trovato)
+      // =========================================================================
+      if (partiteCandidate.length !== 1) {
+        const numeroGiornataEstratto = estraiNumeroGiornata(item.fullText);
+        if (numeroGiornataEstratto) {
+          const filtratePerGiornata = partiteCandidate.filter(
+            p => parseInt(p.id_giornata, 10) === numeroGiornataEstratto
+          );
+
+          if (filtratePerGiornata.length > 0) {
+            partiteCandidate = filtratePerGiornata;
+          }
+        }
+      }
+
+      // =========================================================================
+      // LIVELLO 3: MATCHING PER DATA PARTITA / POST (scelta della più vicina)
+      // =========================================================================
+      let partitaScelta = null;
+
+      if (partiteCandidate.length === 1) {
+        partitaScelta = partiteCandidate[0];
+      } else if (partiteCandidate.length > 1) {
         const dataPost = new Date(item.postDate);
-        partiteSquadra.sort((a, b) => {
+        partiteCandidate.sort((a, b) => {
           return differenzaGiorni(dataPost, new Date(a.data_partita)) - differenzaGiorni(dataPost, new Date(b.data_partita));
         });
-        partitaScelta = partiteSquadra[0];
+        partitaScelta = partiteCandidate[0];
       }
 
       if (!partitaScelta) continue;
@@ -247,7 +316,7 @@ async function scansionaSquadra(squadra, squadre, tutteLePartite) {
         { onConflict: 'video_url' }
       );
 
-      console.log(`✅ [${categoriaTitolo}] -> Partita ID ${partitaScelta.id_partita}: ${item.url}`);
+      console.log(`✅ [${categoriaTitolo}] -> Partita ID ${partitaScelta.id_partita} (Giornata ${partitaScelta.id_giornata}): ${item.url}`);
     }
 
   } finally {
@@ -268,7 +337,7 @@ app.get('/scrape', async (req, res) => {
   res.json({ message: `Scraping avviato per blocco da index ${offset} (max ${limit} squadre)...` });
 
   try {
-    const { data: tutteSquadre } = await supabase.from('squadre').select('id_squadra, nome, facebook_page_url');
+    const { data: tutteSquadre } = await supabase.from('squadre').select('id_squadra, nome, facebook_page_url, girone');
     const { data: tutteLePartite } = await supabase.from('partite').select('id_partita, id_squadra_casa, id_squadra_ospite, data_partita, id_giornata');
 
     if (!tutteSquadre || !tutteLePartite) return;
@@ -280,7 +349,7 @@ app.get('/scrape', async (req, res) => {
       counter++;
       if (!squadra.facebook_page_url) continue;
 
-      console.log(`Scansione (${counter}/${tutteSquadre.length}) per: ${squadra.facebook_page_url}`);
+      console.log(`Scansione (${counter}/${tutteSquadre.length}) per: ${squadra.nome} (${squadra.facebook_page_url})`);
 
       try {
         await withTimeout(scansionaSquadra(squadra, tutteSquadre, tutteLePartite), 35000);
