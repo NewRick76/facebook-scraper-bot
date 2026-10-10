@@ -172,8 +172,9 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
     });
 
     page = await browser.newPage();
-    page.setDefaultTimeout(12000);
-    page.setDefaultNavigationTimeout(12000);
+    // Timeout ripristinati a valori sicuri (20 secondi)
+    page.setDefaultTimeout(20000);
+    page.setDefaultNavigationTimeout(20000);
 
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
@@ -196,11 +197,11 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       targetUrl = targetUrl.endsWith('/') ? `${targetUrl}videos/` : `${targetUrl}/videos/`;
     }
 
-    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 12000 });
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
 
     for (let i = 0; i < 3; i++) {
-      await withTimeout(page.evaluate(() => window.scrollBy(0, 1200)), 2500).catch(() => {});
-      await new Promise((r) => setTimeout(r, 400));
+      await withTimeout(page.evaluate(() => window.scrollBy(0, 1200)), 3000).catch(() => {});
+      await new Promise((r) => setTimeout(r, 600));
     }
 
     const rawItems = await withTimeout(
@@ -228,7 +229,7 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
         });
         return results;
       }),
-      5000
+      8000
     ).catch(() => []);
 
     const avversariStessoGirone = squadra.girone 
@@ -316,7 +317,6 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
   }
 }
 
-// Funzione interna di elaborazione asincrona
 async function eseguiScrapingInBackground(offset, limit) {
   try {
     const { data: tutteSquadre } = await supabase.from('squadre').select('id_squadra, nome, facebook_page_url, girone');
@@ -334,12 +334,13 @@ async function eseguiScrapingInBackground(offset, limit) {
       console.log(`Scansione (${counter}/${tutteSquadre.length}) per: ${squadra.nome} (${squadra.facebook_page_url})`);
 
       try {
-        await withTimeout(scansionaSquadra(squadra, tutteSquadre, tutteLePartite), 25000);
+        // Timeout complessivo per squadra portato a 35 secondi per dare tempo a FB di caricare
+        await withTimeout(scansionaSquadra(squadra, tutteSquadre, tutteLePartite), 35000);
       } catch (err) {
         console.error(`⚠️ Salto ${squadra.nome}: ${err.message}`);
       }
 
-      await new Promise((r) => setTimeout(r, 400));
+      await new Promise((r) => setTimeout(r, 600));
       if (global.gc) global.gc();
     }
 
@@ -361,13 +362,11 @@ app.get('/scrape', (req, res) => {
 
   isScrapingRunning = true;
 
-  // Risposta IMMEDIATA al client per evitare qualsiasi timeout di rete
   res.json({ 
     status: "ok", 
     message: `Scraping avviato in background per il blocco ${offset} - ${offset + limit}.` 
   });
 
-  // Avvio dello scraping in modalità asincrona
   eseguiScrapingInBackground(offset, limit);
 });
 
