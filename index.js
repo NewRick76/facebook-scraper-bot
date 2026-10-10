@@ -56,7 +56,7 @@ function classificaTitoloVideo(testo) {
     return 'Highlights';
   }
 
-  // 2. POST-PARTITA (Priorità alle frasi di chiusura match)
+  // 2. POST-PARTITA
   if (
     t.includes('postpartita') || t.includes('post-partita') ||
     t.includes('post gara') || t.includes('dopo gara') ||
@@ -167,21 +167,22 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
         '--no-zygote',
         '--disable-gpu',
         '--disable-speech-api',
-        '--disable-background-networking'
+        '--disable-background-networking',
+        '--disable-extensions'
       ]
     });
 
     page = await browser.newPage();
-    // Timeout ripristinati a valori sicuri (20 secondi)
-    page.setDefaultTimeout(20000);
-    page.setDefaultNavigationTimeout(20000);
+    page.setDefaultTimeout(25000);
+    page.setDefaultNavigationTimeout(25000);
 
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
+    // Blocco avanzato delle risorse pesanti per velocizzare al massimo il caricamento
     await page.setRequestInterception(true);
     page.on('request', (req) => {
       const type = req.resourceType();
-      if (['image', 'font', 'media'].includes(type)) {
+      if (['image', 'font', 'media', 'stylesheet'].includes(type)) {
         req.abort();
       } else {
         req.continue();
@@ -197,11 +198,11 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       targetUrl = targetUrl.endsWith('/') ? `${targetUrl}videos/` : `${targetUrl}/videos/`;
     }
 
-    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
 
     for (let i = 0; i < 3; i++) {
-      await withTimeout(page.evaluate(() => window.scrollBy(0, 1200)), 3000).catch(() => {});
-      await new Promise((r) => setTimeout(r, 600));
+      await withTimeout(page.evaluate(() => window.scrollBy(0, 1200)), 2000).catch(() => {});
+      await new Promise((r) => setTimeout(r, 400));
     }
 
     const rawItems = await withTimeout(
@@ -334,13 +335,12 @@ async function eseguiScrapingInBackground(offset, limit) {
       console.log(`Scansione (${counter}/${tutteSquadre.length}) per: ${squadra.nome} (${squadra.facebook_page_url})`);
 
       try {
-        // Timeout complessivo per squadra portato a 35 secondi per dare tempo a FB di caricare
-        await withTimeout(scansionaSquadra(squadra, tutteSquadre, tutteLePartite), 35000);
+        await withTimeout(scansionaSquadra(squadra, tutteSquadre, tutteLePartite), 45000);
       } catch (err) {
         console.error(`⚠️ Salto ${squadra.nome}: ${err.message}`);
       }
 
-      await new Promise((r) => setTimeout(r, 600));
+      await new Promise((r) => setTimeout(r, 500));
       if (global.gc) global.gc();
     }
 
