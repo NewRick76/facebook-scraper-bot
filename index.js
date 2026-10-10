@@ -140,10 +140,17 @@ async function killBrowser(browser) {
   
   try {
     const proc = browser.process();
-    if (proc && !proc.killed) {
-      proc.kill('SIGKILL');
+    if (proc && proc.pid) {
+      process.kill(-proc.pid, 'SIGKILL');
     }
-  } catch (e) {}
+  } catch (e) {
+    try {
+      const proc = browser.process();
+      if (proc && !proc.killed) {
+        proc.kill('SIGKILL');
+      }
+    } catch (err) {}
+  }
 }
 
 async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
@@ -161,8 +168,7 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
         '--no-first-run',
         '--no-zygote',
         '--disable-gpu',
-        '--disable-speech-api',
-        '--disable-background-networking',
+        '--disable-software-rasterizer',
         '--disable-extensions'
       ]
     });
@@ -172,8 +178,6 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
     page.setDefaultNavigationTimeout(25000);
 
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-
-    // NESSUNA intercettazione di risorse (come nella versione iniziale funzionante)
 
     let targetUrl = squadra.facebook_page_url;
     if (targetUrl.includes('profile.php')) {
@@ -323,7 +327,8 @@ async function eseguiScrapingInBackground(offset, limit) {
         console.error(`⚠️ Salto ${squadra.nome}: ${err.message}`);
       }
 
-      await new Promise((r) => setTimeout(r, 500));
+      // Pausa di sicurezza per liberare RAM tra una squadra e l'altra
+      await new Promise((r) => setTimeout(r, 1000));
       if (global.gc) global.gc();
     }
 
