@@ -198,7 +198,8 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       targetUrl = targetUrl.endsWith('/') ? `${targetUrl}videos/` : `${targetUrl}/videos/`;
     }
 
-    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
+    // Usiamo networkidle2 per attendere che la pagina e i componenti dinamici siano stabilizzati
+    await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 25000 });
 
     for (let i = 0; i < 3; i++) {
       await withTimeout(page.evaluate(() => window.scrollBy(0, 1200)), 2000).catch(() => {});
@@ -232,6 +233,8 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       }),
       8000
     ).catch(() => []);
+
+    console.log(`🔍 [${squadra.nome}] Link video grezzi trovati: ${rawItems.length}`);
 
     const avversariStessoGirone = squadra.girone 
       ? tutteLeSquadre.filter(s => s.girone === squadra.girone && s.id_squadra !== squadra.id_squadra)
