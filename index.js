@@ -178,32 +178,21 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
 
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    // Blocco delle sole risorse multimediali pesanti (I CSS restano attivi per garantire il rendering)
-    await page.setRequestInterception(true);
-    page.on('request', (req) => {
-      const type = req.resourceType();
-      if (['image', 'font', 'media'].includes(type)) {
-        req.abort();
-      } else {
-        req.continue();
-      }
-    });
-
     let targetUrl = squadra.facebook_page_url;
+
+    // Normalizziamo l'URL rimuovendo il percorso /videos/ che spesso viene bloccato senza login
     if (targetUrl.includes('profile.php')) {
-      targetUrl = targetUrl.includes('?') 
-        ? `${targetUrl}&sk=videos` 
-        : `${targetUrl}?sk=videos`;
+      targetUrl = targetUrl.replace('&sk=videos', '').replace('?sk=videos', '');
     } else {
-      targetUrl = targetUrl.endsWith('/') ? `${targetUrl}videos/` : `${targetUrl}/videos/`;
+      targetUrl = targetUrl.replace(/\/videos\/?$/, '/');
     }
 
-    // Usiamo networkidle2 per attendere che la pagina e i componenti dinamici siano stabilizzati
+    // Carichiamo la pagina principale del profilo
     await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 25000 });
 
     for (let i = 0; i < 3; i++) {
       await withTimeout(page.evaluate(() => window.scrollBy(0, 1200)), 2000).catch(() => {});
-      await new Promise((r) => setTimeout(r, 400));
+      await new Promise((r) => setTimeout(r, 500));
     }
 
     const rawItems = await withTimeout(
@@ -213,11 +202,11 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
 
         links.forEach((a) => {
           const href = a.href || '';
-          const isVideo = href.includes('/videos/') || href.includes('/watch/?v=') || href.includes('/reel/');
+          const isVideo = href.includes('/videos/') || href.includes('/watch/?v=') || href.includes('/reel/') || href.includes('watch');
           const isNotGeneric = href !== 'https://www.facebook.com/watch/' && !href.endsWith('/videos/');
 
           if (isVideo && isNotGeneric) {
-            const article = a.closest('div[role="article"]');
+            const article = a.closest('div[role="article"]') || a.closest('div[data-s2n]') || a.parentElement;
             const parentText = article?.innerText || a.innerText || '';
             const timeEl = article?.querySelector('time');
             const postDate = timeEl ? timeEl.getAttribute('datetime') : null;
