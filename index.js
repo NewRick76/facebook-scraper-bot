@@ -56,7 +56,22 @@ function classificaTitoloVideo(testo) {
     return 'Highlights';
   }
 
-  // 2. PREPARTITA
+  // 2. POST-PARTITA (Priorità alle frasi di chiusura match)
+  if (
+    t.includes('postpartita') || t.includes('post-partita') ||
+    t.includes('post gara') || t.includes('dopo gara') ||
+    t.includes('dopo match') || t.includes('commento al match') ||
+    t.includes('commento del') || t.includes('commento di') ||
+    t.includes('al termine della') || t.includes('al termine del') ||
+    t.includes('al termine di') || t.includes('commenta la vittoria') ||
+    t.includes('commenta la sconfitta') || t.includes('dichiarazioni a caldo') ||
+    (t.includes('conferenza') && !t.includes('roster') && !t.includes('sponsor')) ||
+    (t.includes('sala stampa') && !t.includes('presentazione roster') && !t.includes('presentazione gara'))
+  ) {
+    return 'Post-Partita';
+  }
+
+  // 3. PREPARTITA
   if (
     t.includes('prepartita') || t.includes('pre-partita') ||
     t.includes('pre gara') || t.includes('anteprima') ||
@@ -72,21 +87,9 @@ function classificaTitoloVideo(testo) {
     return 'Prepartita';
   }
 
-  // 3. POST-PARTITA
-  if (
-    t.includes('postpartita') || t.includes('post-partita') ||
-    t.includes('post gara') || t.includes('dopo gara') ||
-    t.includes('dopo match') || t.includes('commento al match') ||
-    t.includes('commenta la vittoria') || t.includes('commenta la sconfitta') ||
-    (t.includes('conferenza') && !t.includes('roster') && !t.includes('sponsor')) ||
-    (t.includes('sala stampa') && !t.includes('presentazione roster'))
-  ) {
-    return 'Post-Partita';
-  }
-
   // 4. CONTROLLI DI RIPIEGO
   if (t.includes('coach') || t.includes('parole') || t.includes('intervista')) {
-    if (t.includes('dopo la gara') || t.includes('vittoria') || t.includes('sconfitta')) return 'Post-Partita';
+    if (t.includes('dopo la gara') || t.includes('vittoria') || t.includes('sconfitta') || t.includes('al termine')) return 'Post-Partita';
     if (t.includes('sfida') || t.includes('match') || t.includes('prossima gara') || t.includes('prossimo match') || t.includes('domenica')) return 'Prepartita';
   }
 
