@@ -195,7 +195,7 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       await new Promise((r) => setTimeout(r, 400));
     }
 
-    const rawItemsGrezzi = await withTimeout(
+    const rawItems = await withTimeout(
       page.evaluate(() => {
         const results = [];
         const links = Array.from(document.querySelectorAll('a'));
@@ -223,33 +223,16 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       8000
     ).catch(() => []);
 
-    // RAGGRUPPAMENTO PER URL: Uniamo la durata (es "2:48") al testo descrittivo del post
-    const itemsMap = new Map();
-
-    for (const item of rawItemsGrezzi) {
-      const matchTempo = item.fullText.trim().match(/^(\d{1,2}:\d{2})/);
-      const eMinutaggio = !!matchTempo;
-
-      if (!itemsMap.has(item.url)) {
-        itemsMap.set(item.url, {
-          url: item.url,
-          fullText: eMinutaggio ? '' : item.fullText,
-          durata: eMinutaggio ? matchTempo[1] : null,
-          postDate: item.postDate
-        });
-      } else {
-        const esistente = itemsMap.get(item.url);
-        if (eMinutaggio) {
-          esistente.durata = matchTempo[1];
-        } else if (item.fullText.length > esistente.fullText.length) {
-          esistente.fullText = item.fullText;
-        }
+    // Creiamo una mappa di supporto per estrarre la durata associata allo stesso URL senza rovinare i testi dei post
+    const durateMap = {};
+    for (const item of rawItems) {
+      const match = item.fullText.trim().match(/^(\d{1,2}:\d{2})$/);
+      if (match) {
+        durateMap[item.url] = match[1];
       }
     }
 
-    const rawItems = Array.from(itemsMap.values());
-
-    console.log(`🔍 [DEBUG] ${squadra.nome}: Trovati ${rawItems.length} video univoci.`);
+    console.log(`🔍 [DEBUG] ${squadra.nome}: Trovati ${rawItems.length} elementi grezzi.`);
 
     const avversariStessoGirone = squadra.girone 
       ? tutteLeSquadre.filter(s => s.girone === squadra.girone && s.id_squadra !== squadra.id_squadra)
@@ -313,13 +296,15 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
 
       if (!partitaScelta) continue;
 
+      const durataTrovata = durateMap[item.url] || null;
+
       const { error: dbError } = await supabase.from('highlights_partite').upsert(
         {
           id_partita: partitaScelta.id_partita,
           id_squadra_autore: squadra.id_squadra,
           video_url: item.url,
           titolo: categoriaTitolo,
-          durata: item.durata, // <--- SALVIAMO LA DURATA ESTRATTA (es. "2:48")
+          durata: durataTrovata,
           piattaforma: 'facebook'
         },
         { onConflict: 'video_url' }
@@ -328,7 +313,7 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       if (dbError) {
         console.error(`      ❌ Errore Supabase UPSERT:`, dbError.message);
       } else {
-        console.log(`      🎉 SALVATAGGIO OK -> [${categoriaTitolo}] (Durata: ${item.durata || 'N/D'}) Partita ID ${partitaScelta.id_partita}: ${item.url}`);
+        console.log(`      🎉 SALVATAGGIO OK -> [${categoriaTitolo}] (Durata: ${durataTrovata || 'N/D'}) Partita ID ${partitaScelta.id_partita}: ${item.url}`);
       }
     }
 
