@@ -178,11 +178,11 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
 
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    // Blocco avanzato delle risorse pesanti per velocizzare al massimo il caricamento
+    // Blocco delle sole risorse multimediali pesanti (I CSS restano attivi per garantire il rendering)
     await page.setRequestInterception(true);
     page.on('request', (req) => {
       const type = req.resourceType();
-      if (['image', 'font', 'media', 'stylesheet'].includes(type)) {
+      if (['image', 'font', 'media'].includes(type)) {
         req.abort();
       } else {
         req.continue();
