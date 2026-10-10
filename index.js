@@ -26,14 +26,18 @@ function classificaTitoloVideo(testo) {
   if (!testo) return null;
   const t = testo.toLowerCase();
 
-  // 0. ESCLUSIONI PREVENTIVE
+  // 0. ESCLUSIONI PREVENTIVE (Allenamenti, sponsor, presentazioni roster/giocatori, mercato, conferme)
   if (
     t.includes('allenament') || t.includes('training') ||
     t.includes('dietro le quinte') || t.includes('backstage') ||
     t.includes('minibasket') || t.includes('giovanil') ||
     t.includes('scuola basket') || t.includes('sponsor') ||
     t.includes('presentazione del main') || t.includes('presentazione maglie') ||
-    t.includes('presentazione roster')
+    t.includes('presentazione roster') || t.includes('presentazione di') ||
+    t.includes('conferme') || t.includes('conferma') ||
+    t.includes('roster') || t.includes('nuovo acquisto') ||
+    t.includes('nuovo giocatore') || t.includes('benvenuto') ||
+    t.includes('firmato') || t.includes('ingaggio')
   ) {
     return null;
   }
@@ -66,7 +70,7 @@ function classificaTitoloVideo(testo) {
     t.includes('post gara') || t.includes('dopo gara') ||
     t.includes('dopo match') || t.includes('commento al match') ||
     t.includes('commenta la vittoria') || t.includes('commenta la sconfitta') ||
-    (t.includes('conferenza') && !t.includes('presentazione')) ||
+    (t.includes('conferenza') && !t.includes('presentazione') && !t.includes('roster')) ||
     (t.includes('sala stampa') && !t.includes('presentazione'))
   ) {
     return 'Post-Partita';
@@ -254,25 +258,29 @@ app.get('/scrape', async (req, res) => {
     return res.status(429).json({ message: "Un processo di scraping è già in esecuzione!" });
   }
 
+  const offset = parseInt(req.query.offset) || 0;
+  const limit = parseInt(req.query.limit) || 56;
+
   isScrapingRunning = true;
-  res.json({ message: "Scraping avviato in background..." });
+  res.json({ message: `Scraping avviato per blocco da index ${offset} (max ${limit} squadre)...` });
 
   try {
-    const { data: squadre } = await supabase.from('squadre').select('id_squadra, nome, facebook_page_url');
+    const { data: tutteSquadre } = await supabase.from('squadre').select('id_squadra, nome, facebook_page_url');
     const { data: tutteLePartite } = await supabase.from('partite').select('id_partita, id_squadra_casa, id_squadra_ospite, data_partita, id_giornata');
 
-    if (!squadre || !tutteLePartite) return;
+    if (!tutteSquadre || !tutteLePartite) return;
 
-    let counter = 0;
-    for (const squadra of squadre) {
+    const squadreSelezionate = tutteSquadre.slice(offset, offset + limit);
+
+    let counter = offset;
+    for (const squadra of squadreSelezionate) {
       counter++;
       if (!squadra.facebook_page_url) continue;
 
-      console.log(`Scansione (${counter}/${squadre.length}) per: ${squadra.facebook_page_url}`);
+      console.log(`Scansione (${counter}/${tutteSquadre.length}) per: ${squadra.facebook_page_url}`);
 
       try {
-        // Concesso un tempo congruo (35s) per completare il rendering di Facebook
-        await withTimeout(scansionaSquadra(squadra, squadre, tutteLePartite), 35000);
+        await withTimeout(scansionaSquadra(squadra, tutteSquadre, tutteLePartite), 35000);
       } catch (err) {
         console.error(`⚠️ Salto ${squadra.facebook_page_url}: ${err.message}`);
       }
@@ -281,12 +289,18 @@ app.get('/scrape', async (req, res) => {
       if (global.gc) global.gc();
     }
 
-    console.log('Scraping completato per tutte le squadre!');
+    console.log(`Scraping completato per il blocco ${offset} - ${offset + squadreSelezionate.length}!`);
   } catch (err) {
     console.error('Errore generale:', err);
   } finally {
     isScrapingRunning = false;
   }
+});
+
+// Endpoint di emergenza per resettare il lock in caso di blocchi anomali
+app.get('/reset-lock', (req, res) => {
+  isScrapingRunning = false;
+  res.json({ message: "Lock dello scraping resettato con successo!" });
 });
 
 const PORT = process.env.PORT || 10000;
