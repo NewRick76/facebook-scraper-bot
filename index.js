@@ -94,7 +94,6 @@ function withTimeout(promise, ms) {
   return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
 }
 
-// Funzione di pulizia radicale per eliminare i processi residui di Chromium
 async function killBrowser(browser) {
   if (!browser) return;
   try {
@@ -114,7 +113,6 @@ async function scansionaSquadra(squadra, squadre, tutteLePartite) {
   let page = null;
 
   try {
-    // Avviamo un browser dedicato e isolato per questa singola squadra
     browser = await puppeteer.launch({
       headless: 'new',
       args: [
@@ -125,21 +123,22 @@ async function scansionaSquadra(squadra, squadre, tutteLePartite) {
         '--no-first-run',
         '--no-zygote',
         '--disable-gpu',
+        '--disable-speech-api',
         '--disable-background-networking'
       ]
     });
 
     page = await browser.newPage();
-    page.setDefaultTimeout(8000);
-    page.setDefaultNavigationTimeout(8000);
+    page.setDefaultTimeout(15000);
+    page.setDefaultNavigationTimeout(15000);
 
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    // Intercettazione aggressiva per non sprecare RAM caricando immagini o fogli di stile
+    // Blocchiamo solo immagini, font e video pesanti per far funzionare gli script di FB
     await page.setRequestInterception(true);
     page.on('request', (req) => {
       const type = req.resourceType();
-      if (['image', 'font', 'media', 'stylesheet', 'other'].includes(type)) {
+      if (['image', 'font', 'media'].includes(type)) {
         req.abort();
       } else {
         req.continue();
@@ -150,11 +149,11 @@ async function scansionaSquadra(squadra, squadre, tutteLePartite) {
       ? `${squadra.facebook_page_url}videos/`
       : `${squadra.facebook_page_url}/videos/`;
 
-    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
-    for (let i = 0; i < 2; i++) {
-      await withTimeout(page.evaluate(() => window.scrollBy(0, 1000)), 2000).catch(() => {});
-      await new Promise((r) => setTimeout(r, 200));
+    for (let i = 0; i < 3; i++) {
+      await withTimeout(page.evaluate(() => window.scrollBy(0, 1200)), 3000).catch(() => {});
+      await new Promise((r) => setTimeout(r, 600));
     }
 
     const rawItems = await withTimeout(
@@ -182,7 +181,7 @@ async function scansionaSquadra(squadra, squadre, tutteLePartite) {
         });
         return results;
       }),
-      4000
+      6000
     ).catch(() => []);
 
     const partiteSquadra = tutteLePartite.filter(
@@ -272,13 +271,13 @@ app.get('/scrape', async (req, res) => {
       console.log(`Scansione (${counter}/${squadre.length}) per: ${squadra.facebook_page_url}`);
 
       try {
-        await withTimeout(scansionaSquadra(squadra, squadre, tutteLePartite), 18000);
+        // Concesso un tempo congruo (35s) per completare il rendering di Facebook
+        await withTimeout(scansionaSquadra(squadra, squadre, tutteLePartite), 35000);
       } catch (err) {
         console.error(`⚠️ Salto ${squadra.facebook_page_url}: ${err.message}`);
       }
 
-      // Pausa di respiro e Garbage Collection Node.js tra una squadra e l'altra
-      await new Promise((r) => setTimeout(r, 800));
+      await new Promise((r) => setTimeout(r, 600));
       if (global.gc) global.gc();
     }
 
