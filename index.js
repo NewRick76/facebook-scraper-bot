@@ -30,6 +30,7 @@ function classificaTitoloVideo(testo) {
   if (!testo) return null;
   const t = testo.toLowerCase();
 
+  // 0. ESCLUSIONI PREVENTIVE
   if (
     t.includes('allenament') || t.includes('training') ||
     t.includes('dietro le quinte') || t.includes('backstage') ||
@@ -45,6 +46,7 @@ function classificaTitoloVideo(testo) {
     return null;
   }
 
+  // 1. HIGHLIGHTS
   if (
     t.includes('highlight') || t.includes('sintesi') ||
     t.includes('azioni salienti') || t.includes('top 10') ||
@@ -54,6 +56,7 @@ function classificaTitoloVideo(testo) {
     return 'Highlights';
   }
 
+  // 2. POST-PARTITA
   if (
     t.includes('postpartita') || t.includes('post-partita') ||
     t.includes('post gara') || t.includes('dopo gara') ||
@@ -68,6 +71,7 @@ function classificaTitoloVideo(testo) {
     return 'Post-Partita';
   }
 
+  // 3. PREPARTITA
   if (
     t.includes('prepartita') || t.includes('pre-partita') ||
     t.includes('pre gara') || t.includes('anteprima') ||
@@ -83,6 +87,7 @@ function classificaTitoloVideo(testo) {
     return 'Prepartita';
   }
 
+  // 4. CONTROLLI DI RIPIEGO
   if (t.includes('coach') || t.includes('parole') || t.includes('intervista')) {
     if (t.includes('dopo la gara') || t.includes('vittoria') || t.includes('sconfitta') || t.includes('al termine')) return 'Post-Partita';
     if (t.includes('sfida') || t.includes('match') || t.includes('prossima gara') || t.includes('prossimo match') || t.includes('domenica')) return 'Prepartita';
@@ -195,46 +200,67 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       await new Promise((r) => setTimeout(r, 600));
     }
 
-    // Estrazione migliorata: raccogliamo sia il testo del post che l'eventuale durata presente nel contenitore
+    // ESTRAZIONE AVANZATA DURATA + DEDUPLICAZIONE NATIVA DOM
     const rawItems = await withTimeout(
       page.evaluate(() => {
         const results = [];
-        const links = Array.from(document.querySelectorAll('a'));
+        const seen = new Set();
+        const regexDurata = /^\d{1,2}:\d{2}(?::\d{2})?$/;
 
-        links.forEach((a) => {
+        document.querySelectorAll('a').forEach((a) => {
           const href = a.href || '';
           const isVideo = href.includes('/videos/') || href.includes('/watch') || href.includes('/reel/') || href.includes('story.php');
           const isNotGeneric = href !== 'https://www.facebook.com/watch/' && !href.endsWith('/videos/') && !href.endsWith('/videos');
+          if (!isVideo || !isNotGeneric) return;
 
-          if (isVideo && isNotGeneric) {
-            const article = a.closest('div[role="article"]') || a.closest('div[data-s2n]') || a.parentElement;
-            const parentText = article?.innerText || a.innerText || '';
-            const timeEl = article?.querySelector('time');
-            const postDate = timeEl ? timeEl.getAttribute('datetime') : null;
+          const url = href.split('?')[0];
 
-            // Cerchiamo nel blocco del post stringhe che somigliano a una durata (es. "2:48", "1:30:12")
-            let durataEstratta = null;
-            if (parentText) {
-              const matchDurata = parentText.match(/\b(\d{1,2}:\d{2}(?::\d{2})?)\b/);
-              if (matchDurata) {
-                durataEstratta = matchDurata[1];
+          // Risali fino a 6 livelli cercando un nodo foglia che sia ESATTAMENTE una durata
+          let durata = null;
+          let container = a;
+          for (let i = 0; i < 6 && container && !durata; i++) {
+            const candidati = container.querySelectorAll('span, div');
+            for (const el of candidati) {
+              if (el.children.length === 0) {
+                const txt = (el.textContent || '').trim();
+                if (regexDurata.test(txt)) {
+                  durata = txt;
+                  break;
+                }
               }
             }
-
-            results.push({
-              url: href.split('?')[0],
-              fullText: parentText,
-              durata: durataEstratta,
-              postDate: postDate ? new Date(postDate) : new Date()
-            });
+            container = container.parentElement;
           }
+
+          const article = a.closest('div[role="article"]') || a.closest('div[data-s2n]') || a.parentElement;
+          const parentText = article?.innerText || a.innerText || '';
+          const timeEl = article?.querySelector('time');
+          const postDate = timeEl ? timeEl.getAttribute('datetime') : null;
+
+          // Deduplicazione: se l'URL esiste già, aggiorna la durata o il testo se più completo
+          if (seen.has(url)) {
+            const esistente = results.find(r => r.url === url);
+            if (esistente) {
+              if (!esistente.durata && durata) esistente.durata = durata;
+              if (parentText.length > esistente.fullText.length) esistente.fullText = parentText;
+            }
+            return;
+          }
+          seen.add(url);
+
+          results.push({
+            url,
+            fullText: parentText,
+            durata,
+            postDate: postDate ? new Date(postDate).toISOString() : null
+          });
         });
         return results;
       }),
       8000
     ).catch(() => []);
 
-    console.log(`🔍 [DEBUG] ${squadra.nome}: Trovati ${rawItems.length} elementi grezzi.`);
+    console.log(`🔍 [DEBUG] ${squadra.nome}: Trovati ${rawItems.length} elementi univoci.`);
 
     const avversariStessoGirone = squadra.girone 
       ? tutteLeSquadre.filter(s => s.girone === squadra.girone && s.id_squadra !== squadra.id_squadra)
@@ -245,9 +271,6 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
     );
 
     for (const item of rawItems) {
-      // Se l'elemento è solo la stringa della durata, lo scartiamo come post testuale autonomo ma teniamo la durata
-      if (item.fullText.trim().match(/^(\d{1,2}:\d{2})$/)) continue;
-
       const categoriaTitolo = classificaTitoloVideo(item.fullText);
       if (!categoriaTitolo) continue;
 
@@ -292,7 +315,7 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       if (partiteCandidate.length === 1) {
         partitaScelta = partiteCandidate[0];
       } else if (partiteCandidate.length > 1) {
-        const dataPost = new Date(item.postDate);
+        const dataPost = item.postDate ? new Date(item.postDate) : new Date();
         partiteCandidate.sort((a, b) => {
           return differenzaGiorni(dataPost, new Date(a.data_partita)) - differenzaGiorni(dataPost, new Date(b.data_partita));
         });
