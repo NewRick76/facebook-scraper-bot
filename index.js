@@ -153,6 +153,10 @@ function differenzaGiorni(d1, d2) {
   return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 }
 
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 function withTimeout(promise, ms) {
   let timeoutId;
   const timeoutPromise = new Promise((_, reject) => {
@@ -182,6 +186,199 @@ async function killBrowser(browser) {
   }
 }
 
+// Costruisce l'URL della sezione video di una pagina Facebook
+function costruisciUrlVideos(baseUrl) {
+  if (baseUrl.includes('profile.php')) {
+    return baseUrl.includes('?') ? `${baseUrl}&sk=videos` : `${baseUrl}?sk=videos`;
+  }
+  return baseUrl.endsWith('/') ? `${baseUrl}videos/` : `${baseUrl}/videos/`;
+}
+
+// Prova a chiudere banner cookie e popup di login
+async function gestisciPopup(page) {
+  try {
+    await withTimeout(
+      page.evaluate(() => {
+        // Ordine di priorità: prima rifiuta i cookie facoltativi, poi accetta
+        const testi = [
+          'rifiuta cookie facoltativi',
+          'decline optional cookies',
+          'consenti solo i cookie essenziali',
+          'only allow essential cookies',
+          'consenti tutti i cookie',
+          'allow all cookies',
+          'accetta tutti',
+          'consenti cookie essenziali e facoltativi'
+        ];
+        const bottoni = Array.from(document.querySelectorAll('div[role="button"], button, span'));
+        for (const testo of testi) {
+          const b = bottoni.find((el) => (el.innerText || '').trim().toLowerCase() === testo);
+          if (b) {
+            b.click();
+            break;
+          }
+        }
+
+        // Chiude eventuale popup di login
+        const chiudi = document.querySelector(
+          'div[role="dialog"] [aria-label="Chiudi"], div[role="dialog"] [aria-label="Close"]'
+        );
+        if (chiudi) chiudi.click();
+      }),
+      3000
+    );
+  } catch (e) {}
+
+  try {
+    await page.keyboard.press('Escape');
+  } catch (e) {}
+}
+
+// Diagnostica: aiuta a capire perché una pagina restituisce 0 video
+async function diagnosticaPagina(page, nomeSquadra) {
+  try {
+    const info = await withTimeout(
+      page.evaluate(() => {
+        const body = (document.body?.innerText || '').toLowerCase();
+        return {
+          url: location.href,
+          title: document.title,
+          loginForm: !!document.querySelector('input[name="pass"]'),
+          testoLogin: body.includes('accedi a facebook') || body.includes('log in to facebook') || body.includes('devi accedere') || body.includes('you must log in'),
+          testoCookie: body.includes('cookie'),
+          nLinkTotali: document.querySelectorAll('a').length,
+          nLinkVideoLike: document.querySelectorAll('a[href*="/videos/"], a[href*="/reel/"], a[href*="/watch"]').length,
+          snippet: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 200)
+        };
+      }),
+      4000
+    );
+    console.log(`🩺 [DIAGNOSI] ${nomeSquadra}:`, JSON.stringify(info));
+  } catch (e) {
+    console.log(`🩺 [DIAGNOSI] ${nomeSquadra}: impossibile leggere la pagina (${e.message})`);
+  }
+}
+
+// Estrazione video dalla pagina corrente (una passata leggera + deduplicazione per ID video)
+async function estraiVideo(page) {
+  return withTimeout(
+    page.evaluate(() => {
+      const regexDurata = /^\d{1,2}:\d{2}(?::\d{2})?$/;
+
+      const idDa = (u) => {
+        const m =
+          u.match(/\/videos\/(?:[^\/?]+\/)?(\d{6,})/) ||
+          u.match(/\/reel\/(\d+)/) ||
+          u.match(/[?&]v=(\d+)/);
+        return m ? m[1] : u.split('?')[0];
+      };
+
+      // 1. Link video validi
+      const videoLinks = [];
+      document.querySelectorAll('a').forEach((a) => {
+        const href = a.href || '';
+        const isVideo = href.includes('/videos/') || href.includes('/watch') || href.includes('/reel/') || href.includes('story.php');
+        const isNotGeneric = href !== 'https://www.facebook.com/watch/' && !href.endsWith('/videos/') && !href.endsWith('/videos');
+        if (isVideo && isNotGeneric) {
+          videoLinks.push({ el: a, url: href.split('?')[0], id: idDa(href) });
+        }
+      });
+
+      // 2. Elementi foglia il cui testo è ESATTAMENTE una durata
+      const durataEls = [];
+      document.querySelectorAll('span, div').forEach((el) => {
+        if (el.children.length === 0) {
+          const txt = (el.textContent || '').trim();
+          if (txt.length <= 8 && regexDurata.test(txt)) {
+            durataEls.push({ el, txt });
+          }
+        }
+      });
+
+      // 3. Associazione link -> durata, deduplicando per ID video
+      const mappa = new Map();
+
+      for (const link of videoLinks) {
+        let durata = null;
+
+        const testoLink = (link.el.innerText || '').trim();
+        const matchLink = testoLink.match(/\b(\d{1,2}:\d{2}(?::\d{2})?)\b/);
+        if (matchLink && regexDurata.test(matchLink[1]) && testoLink.length <= 12) {
+          durata = matchLink[1];
+        }
+
+        if (!durata && durataEls.length > 0) {
+          let container = link.el;
+          for (let i = 0; i < 6 && container && !durata; i++) {
+            const idDiversi = new Set();
+            for (const vl of videoLinks) {
+              if (container.contains(vl.el)) idDiversi.add(vl.id);
+              if (idDiversi.size > 1) break;
+            }
+            if (idDiversi.size > 1) break; // contenitore troppo ampio
+
+            const trovata = durataEls.find((d) => container.contains(d.el));
+            if (trovata) durata = trovata.txt;
+
+            container = container.parentElement;
+          }
+        }
+
+        const article = link.el.closest('div[role="article"]') || link.el.closest('div[data-s2n]') || link.el.parentElement;
+        const parentText = article?.innerText || link.el.innerText || '';
+        const timeEl = article?.querySelector('time');
+        const postDate = timeEl ? timeEl.getAttribute('datetime') : null;
+
+        const esistente = mappa.get(link.id);
+        if (esistente) {
+          if (!esistente.durata && durata) esistente.durata = durata;
+          if (parentText.length > esistente.fullText.length) esistente.fullText = parentText;
+          if (!esistente.postDate && postDate) esistente.postDate = new Date(postDate).toISOString();
+          // Tiene l'URL più lungo (quello con lo slug), che è il più stabile tra le esecuzioni
+          if (link.url.length > esistente.url.length) esistente.url = link.url;
+        } else {
+          mappa.set(link.id, {
+            id: link.id,
+            url: link.url,
+            fullText: parentText,
+            durata,
+            postDate: postDate ? new Date(postDate).toISOString() : null
+          });
+        }
+      }
+
+      return Array.from(mappa.values());
+    }),
+    15000
+  );
+}
+
+// Carica una URL, gestisce i popup, attende i link video, scrolla ed estrae
+async function caricaEdEstrai(page, url, nomeSquadra) {
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
+
+  await sleep(1500);
+  await gestisciPopup(page);
+
+  // Aspetta che compaia almeno un link video (non bloccante)
+  await page
+    .waitForSelector('a[href*="/videos/"], a[href*="/reel/"], a[href*="/watch"]', { timeout: 7000 })
+    .catch(() => {});
+
+  for (let i = 0; i < 4; i++) {
+    await withTimeout(page.evaluate(() => window.scrollBy(0, 1500)), 2000).catch(() => {});
+    await sleep(700);
+    if (i === 1) await gestisciPopup(page);
+  }
+
+  try {
+    return await estraiVideo(page);
+  } catch (err) {
+    console.error(`⚠️ [ESTRAZIONE] ${nomeSquadra}: ${err.message}`);
+    return [];
+  }
+}
+
 async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
   let browser = null;
   let page = null;
@@ -198,7 +395,8 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
         '--no-zygote',
         '--disable-gpu',
         '--disable-software-rasterizer',
-        '--disable-extensions'
+        '--disable-extensions',
+        '--lang=it-IT'
       ]
     });
 
@@ -207,110 +405,20 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
     page.setDefaultNavigationTimeout(25000);
 
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'it-IT,it;q=0.9,en;q=0.8' });
 
-    let targetUrl = squadra.facebook_page_url;
-    if (targetUrl.includes('profile.php')) {
-      targetUrl = targetUrl.includes('?')
-        ? `${targetUrl}&sk=videos`
-        : `${targetUrl}?sk=videos`;
-    } else {
-      targetUrl = targetUrl.endsWith('/') ? `${targetUrl}videos/` : `${targetUrl}/videos/`;
-    }
+    const urlVideos = costruisciUrlVideos(squadra.facebook_page_url);
+    let rawItems = await caricaEdEstrai(page, urlVideos, squadra.nome);
 
-    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
+    // Tentativo di ripiego: se non trova nulla, diagnostica e riprova dalla pagina principale
+    if (rawItems.length === 0) {
+      await diagnosticaPagina(page, squadra.nome);
+      console.log(`🔁 [RETRY] ${squadra.nome}: riprovo dalla pagina principale.`);
+      rawItems = await caricaEdEstrai(page, squadra.facebook_page_url, squadra.nome);
 
-    for (let i = 0; i < 4; i++) {
-      await withTimeout(page.evaluate(() => window.scrollBy(0, 1500)), 2000).catch(() => {});
-      await new Promise((r) => setTimeout(r, 600));
-    }
-
-    // ESTRAZIONE LEGGERA: una sola passata per trovare le durate, poi associazione ai link
-    let rawItems = [];
-    try {
-      rawItems = await withTimeout(
-        page.evaluate(() => {
-          const regexDurata = /^\d{1,2}:\d{2}(?::\d{2})?$/;
-
-          // 1. Link video validi (una sola passata sui link)
-          const videoLinks = [];
-          document.querySelectorAll('a').forEach((a) => {
-            const href = a.href || '';
-            const isVideo = href.includes('/videos/') || href.includes('/watch') || href.includes('/reel/') || href.includes('story.php');
-            const isNotGeneric = href !== 'https://www.facebook.com/watch/' && !href.endsWith('/videos/') && !href.endsWith('/videos');
-            if (isVideo && isNotGeneric) {
-              videoLinks.push({ el: a, url: href.split('?')[0] });
-            }
-          });
-
-          // 2. Elementi "foglia" il cui testo è ESATTAMENTE una durata (una sola passata sul DOM)
-          const durataEls = [];
-          document.querySelectorAll('span, div').forEach((el) => {
-            if (el.children.length === 0) {
-              const txt = (el.textContent || '').trim();
-              if (txt.length <= 8 && regexDurata.test(txt)) {
-                durataEls.push({ el, txt });
-              }
-            }
-          });
-
-          // 3. Per ogni link, risali pochi livelli e cerca una durata contenuta
-          //    nell'antenato, fermandoti se l'antenato contiene più video diversi
-          const mappa = new Map();
-
-          for (const link of videoLinks) {
-            let durata = null;
-
-            // Il testo del link stesso può già essere la durata
-            const testoLink = (link.el.innerText || '').trim();
-            const matchLink = testoLink.match(/\b(\d{1,2}:\d{2}(?::\d{2})?)\b/);
-            if (matchLink && regexDurata.test(matchLink[1]) && testoLink.length <= 12) {
-              durata = matchLink[1];
-            }
-
-            if (!durata && durataEls.length > 0) {
-              let container = link.el;
-              for (let i = 0; i < 6 && container && !durata; i++) {
-                const urlDiversi = new Set();
-                for (const vl of videoLinks) {
-                  if (container.contains(vl.el)) urlDiversi.add(vl.url);
-                  if (urlDiversi.size > 1) break;
-                }
-                if (urlDiversi.size > 1) break; // contenitore troppo ampio
-
-                const trovata = durataEls.find((d) => container.contains(d.el));
-                if (trovata) durata = trovata.txt;
-
-                container = container.parentElement;
-              }
-            }
-
-            const article = link.el.closest('div[role="article"]') || link.el.closest('div[data-s2n]') || link.el.parentElement;
-            const parentText = article?.innerText || link.el.innerText || '';
-            const timeEl = article?.querySelector('time');
-            const postDate = timeEl ? timeEl.getAttribute('datetime') : null;
-
-            const esistente = mappa.get(link.url);
-            if (esistente) {
-              if (!esistente.durata && durata) esistente.durata = durata;
-              if (parentText.length > esistente.fullText.length) esistente.fullText = parentText;
-              if (!esistente.postDate && postDate) esistente.postDate = new Date(postDate).toISOString();
-            } else {
-              mappa.set(link.url, {
-                url: link.url,
-                fullText: parentText,
-                durata,
-                postDate: postDate ? new Date(postDate).toISOString() : null
-              });
-            }
-          }
-
-          return Array.from(mappa.values());
-        }),
-        15000
-      );
-    } catch (errEstrazione) {
-      console.error(`⚠️ [ESTRAZIONE] ${squadra.nome}: ${errEstrazione.message}`);
-      rawItems = [];
+      if (rawItems.length === 0) {
+        await diagnosticaPagina(page, squadra.nome);
+      }
     }
 
     const conDurata = rawItems.filter((r) => r.durata).length;
@@ -324,9 +432,15 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       p => p.id_squadra_casa === squadra.id_squadra || p.id_squadra_ospite === squadra.id_squadra
     );
 
+    let scartatiClassificazione = 0;
+    let scartatiPartita = 0;
+
     for (const item of rawItems) {
       const categoriaTitolo = classificaTitoloVideo(item.fullText);
-      if (!categoriaTitolo) continue;
+      if (!categoriaTitolo) {
+        scartatiClassificazione++;
+        continue;
+      }
 
       const testoLower = item.fullText.toLowerCase();
       let partiteCandidate = [...partiteSquadra];
@@ -376,7 +490,10 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
         partitaScelta = partiteCandidate[0];
       }
 
-      if (!partitaScelta) continue;
+      if (!partitaScelta) {
+        scartatiPartita++;
+        continue;
+      }
 
       const payloadUpsert = {
         id_partita: partitaScelta.id_partita,
@@ -407,6 +524,10 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       }
     }
 
+    if (rawItems.length > 0) {
+      console.log(`📊 [RIEPILOGO] ${squadra.nome}: ${scartatiClassificazione} scartati dal classificatore, ${scartatiPartita} senza partita abbinata.`);
+    }
+
   } catch (err) {
     console.error(`❌ [ERRORE CRITICO] Squadra ${squadra.nome}:`, err.message);
   } finally {
@@ -434,12 +555,13 @@ async function eseguiScrapingInBackground(offset, limit) {
       console.log(`========================================`);
 
       try {
-        await withTimeout(scansionaSquadra(squadra, tutteSquadre, tutteLePartite), 45000);
+        // Timeout alzato a 75s perché ora può esserci un secondo tentativo
+        await withTimeout(scansionaSquadra(squadra, tutteSquadre, tutteLePartite), 75000);
       } catch (err) {
         console.error(`⚠️ Salto ${squadra.nome}: ${err.message}`);
       }
 
-      await new Promise((r) => setTimeout(r, 1000));
+      await sleep(1500);
       if (global.gc) global.gc();
     }
 
