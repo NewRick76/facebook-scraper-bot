@@ -17,13 +17,17 @@ const SCRIVI_DURATA_FORMATTATA = false;
 const DATA_MINIMA = new Date(process.env.DATA_MINIMA || '2026-09-22T00:00:00+02:00');
 
 // Se true, scarta anche i video di cui non si riesce a leggere la data
-const SCARTA_SE_DATA_SCONOSCIUTA = false;
+const SCARTA_SE_DATA_SCONOSCIUTA = true;
 
 // Quante volte provare una pagina (con browser nuovo) se Facebook mostra il login
-const MAX_TENTATIVI = 2;
+const MAX_TENTATIVI = 3;
+
+// Pausa tra una squadra e l'altra (ms), con una parte casuale, per non farsi bloccare da Facebook
+const PAUSA_TRA_SQUADRE_MIN_MS = 6000;
+const PAUSA_TRA_SQUADRE_RANDOM_MS = 6000;
 
 // Tempo massimo per una singola squadra (tutti i tentativi compresi)
-const TIMEOUT_SQUADRA_MS = 150000;
+const TIMEOUT_SQUADRA_MS = 200000;
 // ==========================================================
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -43,6 +47,10 @@ const NOMI_SQUADRE_MAP = {
 };
 
 let isScrapingRunning = false;
+
+function formattaData(d) {
+  return d.toLocaleDateString('it-IT', { timeZone: 'Europe/Rome' });
+}
 
 function classificaTitoloVideo(testo) {
   if (!testo) return null;
@@ -163,7 +171,8 @@ function secondiInFormattata(secondi) {
     : `${m}:${String(s).padStart(2, '0')}`;
 }
 
-// Stima la data di pubblicazione del video da attributo datetime o da righe brevi tipo "3 sett.", "ieri", "5 ott"
+// Stima la data del video da attributo datetime o da righe brevi, in italiano O in inglese
+// (es. "3 giorni fa", "3 days ago", "Yesterday", "Apr 12", "April 12, 2026", "12 aprile")
 function stimaDataVideo(item) {
   const adesso = new Date();
 
@@ -172,34 +181,53 @@ function stimaDataVideo(item) {
     if (!isNaN(d.getTime())) return d;
   }
 
-  const mesi = { gen: 0, feb: 1, mar: 2, apr: 3, mag: 4, giu: 5, lug: 6, ago: 7, set: 8, ott: 9, nov: 10, dic: 11 };
+  const MESI = {
+    gen: 0, jan: 0, feb: 1, mar: 2, apr: 3, mag: 4, may: 4, giu: 5, jun: 5,
+    lug: 6, jul: 6, ago: 7, aug: 7, set: 8, sep: 8, ott: 9, oct: 9, nov: 10, dic: 11, dec: 11
+  };
+  const REGEX_MESE = '(gen|jan|feb|mar|apr|mag|may|giu|jun|lug|jul|ago|aug|set|sep|ott|oct|nov|dic|dec)[a-zà]*\\.?';
+
+  const costruisciData = (giorno, meseKey, annoStr) => {
+    const mese = MESI[meseKey];
+    if (mese === undefined) return null;
+    const anno = annoStr ? parseInt(annoStr, 10) : adesso.getFullYear();
+    let d = new Date(anno, mese, giorno, 12, 0, 0);
+    // Senza anno esplicito, una data nel futuro appartiene all'anno scorso
+    if (!annoStr && d.getTime() > adesso.getTime() + 86400000) {
+      d = new Date(anno - 1, mese, giorno, 12, 0, 0);
+    }
+    return d;
+  };
 
   for (const riga of item.righe || []) {
-    const l = riga.toLowerCase().replace(/^[\s·•\-–—]+/, '');
+    const l = riga.toLowerCase().replace(/^[\s·•\-–—]+/, '').trim();
     let m;
 
-    if ((m = l.match(/^(\d+)\s*(?:min|minuti|minuto)\b/))) return new Date(adesso.getTime() - parseInt(m[1], 10) * 60000);
-    if ((m = l.match(/^(\d+)\s*(?:h|ore|ora)\b/))) return new Date(adesso.getTime() - parseInt(m[1], 10) * 3600000);
-    if ((m = l.match(/^(\d+)\s*(?:g|gg|giorni|giorno)\b/))) return new Date(adesso.getTime() - parseInt(m[1], 10) * 86400000);
-    // "22 sett" con numero alto è con ogni probabilità "22 settembre" abbreviato: lo lascio all'ramo delle date assolute
-    if ((m = l.match(/^(\d+)\s*(?:sett|settimane|settimana)\b/)) && parseInt(m[1], 10) <= 5) {
+    if (/^(just now|adesso|ora|proprio ora)$/.test(l)) return adesso;
+
+    // Relative: italiano + inglese
+    if ((m = l.match(/^(\d+)\s*(?:min|mins|minute|minutes|minuti|minuto|m)\b(?:\s*ago|\s*fa)?$/))) return new Date(adesso.getTime() - parseInt(m[1], 10) * 60000);
+    if ((m = l.match(/^(\d+)\s*(?:h|hr|hrs|hour|hours|ore|ora)\b(?:\s*ago|\s*fa)?$/))) return new Date(adesso.getTime() - parseInt(m[1], 10) * 3600000);
+    if ((m = l.match(/^(\d+)\s*(?:d|day|days|g|gg|giorni|giorno)\b(?:\s*ago|\s*fa)?$/))) return new Date(adesso.getTime() - parseInt(m[1], 10) * 86400000);
+    if ((m = l.match(/^(\d+)\s*(?:w|wk|wks|week|weeks|sett|settimane|settimana)\b(?:\s*ago|\s*fa)?$/)) && parseInt(m[1], 10) <= 5) {
       return new Date(adesso.getTime() - parseInt(m[1], 10) * 7 * 86400000);
     }
-    if ((m = l.match(/^(\d+)\s*(?:mesi|mese)\b/))) return new Date(adesso.getTime() - parseInt(m[1], 10) * 30 * 86400000);
-    if ((m = l.match(/^(\d+)\s*(?:anni|anno)\b/))) return new Date(adesso.getTime() - parseInt(m[1], 10) * 365 * 86400000);
-    if (/^ieri\b/.test(l)) return new Date(adesso.getTime() - 86400000);
+    if ((m = l.match(/^(\d+)\s*(?:month|months|mesi|mese)\b(?:\s*ago|\s*fa)?$/))) return new Date(adesso.getTime() - parseInt(m[1], 10) * 30 * 86400000);
+    if ((m = l.match(/^(\d+)\s*(?:y|yr|yrs|year|years|anni|anno)\b(?:\s*ago|\s*fa)?$/))) return new Date(adesso.getTime() - parseInt(m[1], 10) * 365 * 86400000);
+    if (/^(yesterday|ieri)\b/.test(l)) return new Date(adesso.getTime() - 86400000);
 
-    m = l.match(/^(\d{1,2})\s+(gen|feb|mar|apr|mag|giu|lug|ago|set|ott|nov|dic)[a-zà]*\.?(?:\s+(\d{4}))?/);
+    // Assolute: "12 aprile", "12 apr 2026"
+    m = l.match(new RegExp(`^(\\d{1,2})\\s+${REGEX_MESE}(?:,?\\s+(\\d{4}))?`));
     if (m) {
-      const giorno = parseInt(m[1], 10);
-      const mese = mesi[m[2]];
-      let anno = m[3] ? parseInt(m[3], 10) : adesso.getFullYear();
-      let d = new Date(anno, mese, giorno, 12, 0, 0);
-      // Senza anno esplicito, una data nel futuro è dell'anno scorso
-      if (!m[3] && d.getTime() > adesso.getTime() + 86400000) {
-        d = new Date(anno - 1, mese, giorno, 12, 0, 0);
-      }
-      return d;
+      const d = costruisciData(parseInt(m[1], 10), m[2], m[3]);
+      if (d) return d;
+    }
+
+    // Assolute inglesi: "Apr 12", "April 12, 2026"
+    m = l.match(new RegExp(`^${REGEX_MESE}\\s+(\\d{1,2})(?:,?\\s+(\\d{4}))?`));
+    if (m) {
+      const d = costruisciData(parseInt(m[2], 10), m[1], m[3]);
+      if (d) return d;
     }
   }
 
@@ -571,7 +599,8 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite, ctx) {
 
       if (t < MAX_TENTATIVI) {
         console.log(`🔁 [RETRY] ${squadra.nome}: ${esito.loginWall ? 'Facebook mostra il login' : 'errore'}, riprovo con un browser nuovo (tentativo ${t + 1}/${MAX_TENTATIVI}).`);
-        await sleep(4000 + Math.random() * 4000);
+        // Pausa crescente: più è lunga, più è probabile che il blocco passi
+        await sleep(8000 * t + Math.random() * 6000);
       }
     }
 
@@ -617,12 +646,15 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite, ctx) {
       if (dataVideo) {
         if (dataVideo.getTime() < DATA_MINIMA.getTime()) {
           scartatiData++;
-          console.log(`      ⏭️ Scartato per data (${dataVideo.toLocaleDateString('it-IT')}): ${item.url}`);
+          console.log(`      ⏭️ Scartato per data (${formattaData(dataVideo)}): ${item.url}`);
           continue;
         }
       } else {
         dataSconosciuta++;
-        if (SCARTA_SE_DATA_SCONOSCIUTA) continue;
+        if (SCARTA_SE_DATA_SCONOSCIUTA) {
+          console.log(`      ⏭️ Scartato (data non leggibile): ${item.url}`);
+          continue;
+        }
       }
 
       const categoriaTitolo = classificaTitoloVideo(item.fullText);
@@ -709,12 +741,12 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite, ctx) {
       if (dbError) {
         console.error(`      ❌ Errore Supabase UPSERT:`, dbError.message);
       } else {
-        console.log(`      🎉 SALVATAGGIO OK -> [${categoriaTitolo}] (Durata: ${item.durata || 'N/D'}${dataVideo ? ', Data: ' + dataVideo.toLocaleDateString('it-IT') : ''}) Partita ID ${partitaScelta.id_partita}: ${item.url}`);
+        console.log(`      🎉 SALVATAGGIO OK -> [${categoriaTitolo}] (Durata: ${item.durata || 'N/D'}${dataVideo ? ', Data: ' + formattaData(dataVideo) : ''}) Partita ID ${partitaScelta.id_partita}: ${item.url}`);
       }
     }
 
     if (rawItems.length > 0) {
-      console.log(`📊 [RIEPILOGO] ${squadra.nome}: ${scartatiData} scartati per data (prima del ${DATA_MINIMA.toLocaleDateString('it-IT')}), ${scartatiClassificazione} dal classificatore, ${scartatiPartita} senza partita abbinata, ${dataSconosciuta} senza data leggibile${SCARTA_SE_DATA_SCONOSCIUTA ? ' (scartati)' : ' (salvati comunque)'}.`);
+      console.log(`📊 [RIEPILOGO] ${squadra.nome}: ${scartatiData} scartati per data (prima del ${formattaData(DATA_MINIMA)}), ${scartatiClassificazione} dal classificatore, ${scartatiPartita} senza partita abbinata, ${dataSconosciuta} senza data leggibile${SCARTA_SE_DATA_SCONOSCIUTA ? ' (scartati)' : ' (salvati comunque)'}.`);
     }
   } catch (err) {
     console.error(`❌ [ERRORE CRITICO] Squadra ${squadra.nome}:`, err.message);
@@ -753,7 +785,7 @@ async function eseguiScrapingInBackground(offset, limit) {
         ctx.browser = null;
       }
 
-      await sleep(2500 + Math.random() * 3000);
+      await sleep(PAUSA_TRA_SQUADRE_MIN_MS + Math.random() * PAUSA_TRA_SQUADRE_RANDOM_MS);
       if (global.gc) global.gc();
     }
 
