@@ -190,11 +190,12 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
 
     await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
 
-    for (let i = 0; i < 3; i++) {
-      await withTimeout(page.evaluate(() => window.scrollBy(0, 1200)), 2000).catch(() => {});
-      await new Promise((r) => setTimeout(r, 400));
+    for (let i = 0; i < 4; i++) {
+      await withTimeout(page.evaluate(() => window.scrollBy(0, 1500)), 2000).catch(() => {});
+      await new Promise((r) => setTimeout(r, 600));
     }
 
+    // SELETTORE ESTESO: Cattura qualsiasi link che faccia riferimento a video, watch, reel o post video
     const rawItems = await withTimeout(
       page.evaluate(() => {
         const results = [];
@@ -202,17 +203,17 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
 
         links.forEach((a) => {
           const href = a.href || '';
-          const isVideo = href.includes('/videos/') || href.includes('/watch/?v=') || href.includes('/reel/');
-          const isNotGeneric = href !== 'https://www.facebook.com/watch/' && !href.endsWith('/videos/');
+          const isVideo = href.includes('/videos/') || href.includes('/watch') || href.includes('/reel/') || href.includes('story.php');
+          const isNotGeneric = href !== 'https://www.facebook.com/watch/' && !href.endsWith('/videos/') && !href.endsWith('/videos');
 
           if (isVideo && isNotGeneric) {
-            const article = a.closest('div[role="article"]');
+            const article = a.closest('div[role="article"]') || a.closest('div[data-s2n]') || a.parentElement;
             const parentText = article?.innerText || a.innerText || '';
             const timeEl = article?.querySelector('time');
             const postDate = timeEl ? timeEl.getAttribute('datetime') : null;
 
             results.push({
-              url: href,
+              url: href.split('?')[0], // Pulisciamo i parametri di tracking superflui
               fullText: parentText,
               postDate: postDate ? new Date(postDate) : new Date()
             });
@@ -234,7 +235,6 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
     );
 
     for (const item of rawItems) {
-      // Controlliamo se l'elemento corrente è solo il minutaggio (es. "2:48")
       const matchTempo = item.fullText.trim().match(/^(\d{1,2}:\d{2})$/);
       const durataTrovata = matchTempo ? matchTempo[1] : null;
 
