@@ -8,6 +8,9 @@ const app = express();
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
+// Metti true SOLO se durata_formattata NON si calcola da sola dal valore di durata_secondi
+const SCRIVI_DURATA_FORMATTATA = false;
+
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: false },
   realtime: { transport: WebSocket }
@@ -35,7 +38,7 @@ function classificaTitoloVideo(testo) {
     t.includes('allenament') || t.includes('training') ||
     t.includes('dietro le quinte') || t.includes('backstage') ||
     t.includes('minibasket') || t.includes('giovanil') ||
-    t.includes('scuola basket') || 
+    t.includes('scuola basket') ||
     t.includes('presentazione del main') || t.includes('presentazione maglie') ||
     t.includes('presentazione roster') || t.includes('presentazione squadra') ||
     t.includes('presentazione giocatore') || t.includes('presentazione acquisto') ||
@@ -124,6 +127,27 @@ function estraiNumeroGiornata(testo) {
   return null;
 }
 
+// Converte "2:48" o "1:02:30" in secondi
+function durataInSecondi(str) {
+  if (!str) return null;
+  const parti = str.trim().split(':').map(Number);
+  if (parti.some((n) => Number.isNaN(n))) return null;
+  if (parti.length === 3) return parti[0] * 3600 + parti[1] * 60 + parti[2];
+  if (parti.length === 2) return parti[0] * 60 + parti[1];
+  return null;
+}
+
+// Converte secondi in "m:ss" oppure "h:mm:ss"
+function secondiInFormattata(secondi) {
+  if (secondi == null) return null;
+  const h = Math.floor(secondi / 3600);
+  const m = Math.floor((secondi % 3600) / 60);
+  const s = secondi % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    : `${m}:${String(s).padStart(2, '0')}`;
+}
+
 function differenzaGiorni(d1, d2) {
   const diffTime = Math.abs(d1 - d2);
   return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
@@ -142,7 +166,7 @@ async function killBrowser(browser) {
   try {
     await browser.close().catch(() => {});
   } catch (e) {}
-  
+
   try {
     const proc = browser.process();
     if (proc && proc.pid) {
@@ -186,8 +210,8 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
 
     let targetUrl = squadra.facebook_page_url;
     if (targetUrl.includes('profile.php')) {
-      targetUrl = targetUrl.includes('?') 
-        ? `${targetUrl}&sk=videos` 
+      targetUrl = targetUrl.includes('?')
+        ? `${targetUrl}&sk=videos`
         : `${targetUrl}?sk=videos`;
     } else {
       targetUrl = targetUrl.endsWith('/') ? `${targetUrl}videos/` : `${targetUrl}/videos/`;
@@ -200,69 +224,99 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       await new Promise((r) => setTimeout(r, 600));
     }
 
-    // ESTRAZIONE AVANZATA DURATA + DEDUPLICAZIONE NATIVA DOM
-    const rawItems = await withTimeout(
-      page.evaluate(() => {
-        const results = [];
-        const seen = new Set();
-        const regexDurata = /^\d{1,2}:\d{2}(?::\d{2})?$/;
+    // ESTRAZIONE LEGGERA: una sola passata per trovare le durate, poi associazione ai link
+    let rawItems = [];
+    try {
+      rawItems = await withTimeout(
+        page.evaluate(() => {
+          const regexDurata = /^\d{1,2}:\d{2}(?::\d{2})?$/;
 
-        document.querySelectorAll('a').forEach((a) => {
-          const href = a.href || '';
-          const isVideo = href.includes('/videos/') || href.includes('/watch') || href.includes('/reel/') || href.includes('story.php');
-          const isNotGeneric = href !== 'https://www.facebook.com/watch/' && !href.endsWith('/videos/') && !href.endsWith('/videos');
-          if (!isVideo || !isNotGeneric) return;
+          // 1. Link video validi (una sola passata sui link)
+          const videoLinks = [];
+          document.querySelectorAll('a').forEach((a) => {
+            const href = a.href || '';
+            const isVideo = href.includes('/videos/') || href.includes('/watch') || href.includes('/reel/') || href.includes('story.php');
+            const isNotGeneric = href !== 'https://www.facebook.com/watch/' && !href.endsWith('/videos/') && !href.endsWith('/videos');
+            if (isVideo && isNotGeneric) {
+              videoLinks.push({ el: a, url: href.split('?')[0] });
+            }
+          });
 
-          const url = href.split('?')[0];
-
-          // Risali fino a 6 livelli cercando un nodo foglia che sia ESATTAMENTE una durata
-          let durata = null;
-          let container = a;
-          for (let i = 0; i < 6 && container && !durata; i++) {
-            const candidati = container.querySelectorAll('span, div');
-            for (const el of candidati) {
-              if (el.children.length === 0) {
-                const txt = (el.textContent || '').trim();
-                if (regexDurata.test(txt)) {
-                  durata = txt;
-                  break;
-                }
+          // 2. Elementi "foglia" il cui testo è ESATTAMENTE una durata (una sola passata sul DOM)
+          const durataEls = [];
+          document.querySelectorAll('span, div').forEach((el) => {
+            if (el.children.length === 0) {
+              const txt = (el.textContent || '').trim();
+              if (txt.length <= 8 && regexDurata.test(txt)) {
+                durataEls.push({ el, txt });
               }
             }
-            container = container.parentElement;
-          }
+          });
 
-          const article = a.closest('div[role="article"]') || a.closest('div[data-s2n]') || a.parentElement;
-          const parentText = article?.innerText || a.innerText || '';
-          const timeEl = article?.querySelector('time');
-          const postDate = timeEl ? timeEl.getAttribute('datetime') : null;
+          // 3. Per ogni link, risali pochi livelli e cerca una durata contenuta
+          //    nell'antenato, fermandoti se l'antenato contiene più video diversi
+          const mappa = new Map();
 
-          // Deduplicazione: se l'URL esiste già, aggiorna la durata o il testo se più completo
-          if (seen.has(url)) {
-            const esistente = results.find(r => r.url === url);
+          for (const link of videoLinks) {
+            let durata = null;
+
+            // Il testo del link stesso può già essere la durata
+            const testoLink = (link.el.innerText || '').trim();
+            const matchLink = testoLink.match(/\b(\d{1,2}:\d{2}(?::\d{2})?)\b/);
+            if (matchLink && regexDurata.test(matchLink[1]) && testoLink.length <= 12) {
+              durata = matchLink[1];
+            }
+
+            if (!durata && durataEls.length > 0) {
+              let container = link.el;
+              for (let i = 0; i < 6 && container && !durata; i++) {
+                const urlDiversi = new Set();
+                for (const vl of videoLinks) {
+                  if (container.contains(vl.el)) urlDiversi.add(vl.url);
+                  if (urlDiversi.size > 1) break;
+                }
+                if (urlDiversi.size > 1) break; // contenitore troppo ampio
+
+                const trovata = durataEls.find((d) => container.contains(d.el));
+                if (trovata) durata = trovata.txt;
+
+                container = container.parentElement;
+              }
+            }
+
+            const article = link.el.closest('div[role="article"]') || link.el.closest('div[data-s2n]') || link.el.parentElement;
+            const parentText = article?.innerText || link.el.innerText || '';
+            const timeEl = article?.querySelector('time');
+            const postDate = timeEl ? timeEl.getAttribute('datetime') : null;
+
+            const esistente = mappa.get(link.url);
             if (esistente) {
               if (!esistente.durata && durata) esistente.durata = durata;
               if (parentText.length > esistente.fullText.length) esistente.fullText = parentText;
+              if (!esistente.postDate && postDate) esistente.postDate = new Date(postDate).toISOString();
+            } else {
+              mappa.set(link.url, {
+                url: link.url,
+                fullText: parentText,
+                durata,
+                postDate: postDate ? new Date(postDate).toISOString() : null
+              });
             }
-            return;
           }
-          seen.add(url);
 
-          results.push({
-            url,
-            fullText: parentText,
-            durata,
-            postDate: postDate ? new Date(postDate).toISOString() : null
-          });
-        });
-        return results;
-      }),
-      8000
-    ).catch(() => []);
+          return Array.from(mappa.values());
+        }),
+        15000
+      );
+    } catch (errEstrazione) {
+      console.error(`⚠️ [ESTRAZIONE] ${squadra.nome}: ${errEstrazione.message}`);
+      rawItems = [];
+    }
 
-    console.log(`🔍 [DEBUG] ${squadra.nome}: Trovati ${rawItems.length} elementi univoci.`);
+    const conDurata = rawItems.filter((r) => r.durata).length;
+    console.log(`🔍 [DEBUG] ${squadra.nome}: Trovati ${rawItems.length} elementi univoci (${conDurata} con durata).`);
 
-    const avversariStessoGirone = squadra.girone 
+    const avversariStessoGirone = squadra.girone
       ? tutteLeSquadre.filter(s => s.girone === squadra.girone && s.id_squadra !== squadra.id_squadra)
       : tutteLeSquadre.filter(s => s.id_squadra !== squadra.id_squadra);
 
@@ -282,7 +336,7 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
         const nomeAvvLower = avversario.nome.toLowerCase();
         const aliasList = NOMI_SQUADRE_MAP[nomeAvvLower] || [];
         const paroleSignificative = nomeAvvLower.split(' ').filter(w => w.length > 3 && !['basket', 'pallacanestro', 'virtus', 'real'].includes(w));
-        
+
         const terminiDaCercare = [nomeAvvLower, ...aliasList, ...paroleSignificative];
 
         if (terminiDaCercare.some(termine => testoLower.includes(termine))) {
@@ -332,8 +386,13 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
         piattaforma: 'facebook'
       };
 
-      if (item.durata) {
-        payloadUpsert.durata = item.durata;
+      // La durata viene scritta solo se trovata, così non sovrascrive valori già presenti con null
+      const secondi = durataInSecondi(item.durata);
+      if (secondi != null) {
+        payloadUpsert.durata_secondi = secondi;
+        if (SCRIVI_DURATA_FORMATTATA) {
+          payloadUpsert.durata_formattata = secondiInFormattata(secondi);
+        }
       }
 
       const { error: dbError } = await supabase.from('highlights_partite').upsert(
@@ -402,9 +461,9 @@ app.get('/scrape', (req, res) => {
 
   isScrapingRunning = true;
 
-  res.json({ 
-    status: "ok", 
-    message: `Scraping avviato in background per il blocco ${offset} - ${offset + limit}.` 
+  res.json({
+    status: "ok",
+    message: `Scraping avviato in background per il blocco ${offset} - ${offset + limit}.`
   });
 
   eseguiScrapingInBackground(offset, limit);
