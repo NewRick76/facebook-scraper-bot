@@ -195,7 +195,7 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       await new Promise((r) => setTimeout(r, 600));
     }
 
-    // SELETTORE ESTESO: Cattura qualsiasi link che faccia riferimento a video, watch, reel o post video
+    // Estrazione migliorata: raccogliamo sia il testo del post che l'eventuale durata presente nel contenitore
     const rawItems = await withTimeout(
       page.evaluate(() => {
         const results = [];
@@ -212,9 +212,19 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
             const timeEl = article?.querySelector('time');
             const postDate = timeEl ? timeEl.getAttribute('datetime') : null;
 
+            // Cerchiamo nel blocco del post stringhe che somigliano a una durata (es. "2:48", "1:30:12")
+            let durataEstratta = null;
+            if (parentText) {
+              const matchDurata = parentText.match(/\b(\d{1,2}:\d{2}(?::\d{2})?)\b/);
+              if (matchDurata) {
+                durataEstratta = matchDurata[1];
+              }
+            }
+
             results.push({
-              url: href.split('?')[0], // Pulisciamo i parametri di tracking superflui
+              url: href.split('?')[0],
               fullText: parentText,
+              durata: durataEstratta,
               postDate: postDate ? new Date(postDate) : new Date()
             });
           }
@@ -235,8 +245,8 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
     );
 
     for (const item of rawItems) {
-      const matchTempo = item.fullText.trim().match(/^(\d{1,2}:\d{2})$/);
-      const durataTrovata = matchTempo ? matchTempo[1] : null;
+      // Se l'elemento è solo la stringa della durata, lo scartiamo come post testuale autonomo ma teniamo la durata
+      if (item.fullText.trim().match(/^(\d{1,2}:\d{2})$/)) continue;
 
       const categoriaTitolo = classificaTitoloVideo(item.fullText);
       if (!categoriaTitolo) continue;
@@ -299,8 +309,8 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
         piattaforma: 'facebook'
       };
 
-      if (durataTrovata) {
-        payloadUpsert.durata = durataTrovata;
+      if (item.durata) {
+        payloadUpsert.durata = item.durata;
       }
 
       const { error: dbError } = await supabase.from('highlights_partite').upsert(
@@ -311,7 +321,7 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       if (dbError) {
         console.error(`      ❌ Errore Supabase UPSERT:`, dbError.message);
       } else {
-        console.log(`      🎉 SALVATAGGIO OK -> [${categoriaTitolo}] (Durata: ${durataTrovata || 'N/D'}) Partita ID ${partitaScelta.id_partita}: ${item.url}`);
+        console.log(`      🎉 SALVATAGGIO OK -> [${categoriaTitolo}] (Durata: ${item.durata || 'N/D'}) Partita ID ${partitaScelta.id_partita}: ${item.url}`);
       }
     }
 
