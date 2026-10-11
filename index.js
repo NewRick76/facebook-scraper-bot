@@ -2,14 +2,29 @@ import express from 'express';
 import puppeteer from 'puppeteer';
 import { createClient } from '@supabase/supabase-js';
 import WebSocket from 'ws';
+import { exec } from 'child_process';
 
 const app = express();
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
+// ===================== CONFIGURAZIONE =====================
 // Metti true SOLO se durata_formattata NON si calcola da sola dal valore di durata_secondi
 const SCRIVI_DURATA_FORMATTATA = false;
+
+// Video più vecchi di questa data vengono ignorati (puoi cambiarla con la variabile d'ambiente DATA_MINIMA)
+const DATA_MINIMA = new Date(process.env.DATA_MINIMA || '2026-09-22T00:00:00+02:00');
+
+// Se true, scarta anche i video di cui non si riesce a leggere la data
+const SCARTA_SE_DATA_SCONOSCIUTA = false;
+
+// Quante volte provare una pagina (con browser nuovo) se Facebook mostra il login
+const MAX_TENTATIVI = 2;
+
+// Tempo massimo per una singola squadra (tutti i tentativi compresi)
+const TIMEOUT_SQUADRA_MS = 150000;
+// ==========================================================
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: false },
@@ -148,6 +163,49 @@ function secondiInFormattata(secondi) {
     : `${m}:${String(s).padStart(2, '0')}`;
 }
 
+// Stima la data di pubblicazione del video da attributo datetime o da righe brevi tipo "3 sett.", "ieri", "5 ott"
+function stimaDataVideo(item) {
+  const adesso = new Date();
+
+  if (item.postDate) {
+    const d = new Date(item.postDate);
+    if (!isNaN(d.getTime())) return d;
+  }
+
+  const mesi = { gen: 0, feb: 1, mar: 2, apr: 3, mag: 4, giu: 5, lug: 6, ago: 7, set: 8, ott: 9, nov: 10, dic: 11 };
+
+  for (const riga of item.righe || []) {
+    const l = riga.toLowerCase().replace(/^[\s·•\-–—]+/, '');
+    let m;
+
+    if ((m = l.match(/^(\d+)\s*(?:min|minuti|minuto)\b/))) return new Date(adesso.getTime() - parseInt(m[1], 10) * 60000);
+    if ((m = l.match(/^(\d+)\s*(?:h|ore|ora)\b/))) return new Date(adesso.getTime() - parseInt(m[1], 10) * 3600000);
+    if ((m = l.match(/^(\d+)\s*(?:g|gg|giorni|giorno)\b/))) return new Date(adesso.getTime() - parseInt(m[1], 10) * 86400000);
+    // "22 sett" con numero alto è con ogni probabilità "22 settembre" abbreviato: lo lascio all'ramo delle date assolute
+    if ((m = l.match(/^(\d+)\s*(?:sett|settimane|settimana)\b/)) && parseInt(m[1], 10) <= 5) {
+      return new Date(adesso.getTime() - parseInt(m[1], 10) * 7 * 86400000);
+    }
+    if ((m = l.match(/^(\d+)\s*(?:mesi|mese)\b/))) return new Date(adesso.getTime() - parseInt(m[1], 10) * 30 * 86400000);
+    if ((m = l.match(/^(\d+)\s*(?:anni|anno)\b/))) return new Date(adesso.getTime() - parseInt(m[1], 10) * 365 * 86400000);
+    if (/^ieri\b/.test(l)) return new Date(adesso.getTime() - 86400000);
+
+    m = l.match(/^(\d{1,2})\s+(gen|feb|mar|apr|mag|giu|lug|ago|set|ott|nov|dic)[a-zà]*\.?(?:\s+(\d{4}))?/);
+    if (m) {
+      const giorno = parseInt(m[1], 10);
+      const mese = mesi[m[2]];
+      let anno = m[3] ? parseInt(m[3], 10) : adesso.getFullYear();
+      let d = new Date(anno, mese, giorno, 12, 0, 0);
+      // Senza anno esplicito, una data nel futuro è dell'anno scorso
+      if (!m[3] && d.getTime() > adesso.getTime() + 86400000) {
+        d = new Date(anno - 1, mese, giorno, 12, 0, 0);
+      }
+      return d;
+    }
+  }
+
+  return null;
+}
+
 function differenzaGiorni(d1, d2) {
   const diffTime = Math.abs(d1 - d2);
   return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
@@ -165,25 +223,65 @@ function withTimeout(promise, ms) {
   return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
 }
 
+// Ultima risorsa: uccide eventuali processi Chrome rimasti vivi (se pkill non esiste nel container, non fa nulla)
+function pulisciChrome() {
+  return new Promise((resolve) => {
+    try {
+      exec('pkill -9 chrome', () => resolve());
+    } catch (e) {
+      resolve();
+    }
+  });
+}
+
 async function killBrowser(browser) {
   if (!browser) return;
+  let proc = null;
+  try { proc = browser.process(); } catch (e) {}
+
   try {
-    await browser.close().catch(() => {});
+    await withTimeout(browser.close(), 5000);
   } catch (e) {}
 
   try {
-    const proc = browser.process();
     if (proc && proc.pid) {
-      process.kill(-proc.pid, 'SIGKILL');
-    }
-  } catch (e) {
-    try {
-      const proc = browser.process();
-      if (proc && !proc.killed) {
+      try {
+        process.kill(-proc.pid, 'SIGKILL');
+      } catch (e) {
         proc.kill('SIGKILL');
       }
-    } catch (err) {}
+    }
+  } catch (e) {}
+}
+
+// Lancia Chromium; se non parte (memoria satura) ripulisce e riprova una volta
+async function apriBrowser(ctx) {
+  const opzioni = {
+    headless: 'new',
+    timeout: 60000,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--no-zygote',
+      '--disable-gpu',
+      '--disable-software-rasterizer',
+      '--disable-extensions',
+      '--lang=it-IT'
+    ]
+  };
+
+  try {
+    ctx.browser = await puppeteer.launch(opzioni);
+  } catch (err) {
+    console.error(`⚠️ [LAUNCH] Chromium non è partito (${err.message}). Pulisco e riprovo.`);
+    await pulisciChrome();
+    await sleep(3000);
+    ctx.browser = await puppeteer.launch(opzioni);
   }
+  return ctx.browser;
 }
 
 // Costruisce l'URL della sezione video di una pagina Facebook
@@ -194,12 +292,19 @@ function costruisciUrlVideos(baseUrl) {
   return baseUrl.endsWith('/') ? `${baseUrl}videos/` : `${baseUrl}/videos/`;
 }
 
+function paginaDiLogin(page) {
+  try {
+    return /facebook\.com\/(login|checkpoint)/i.test(page.url());
+  } catch (e) {
+    return false;
+  }
+}
+
 // Prova a chiudere banner cookie e popup di login
 async function gestisciPopup(page) {
   try {
     await withTimeout(
       page.evaluate(() => {
-        // Ordine di priorità: prima rifiuta i cookie facoltativi, poi accetta
         const testi = [
           'rifiuta cookie facoltativi',
           'decline optional cookies',
@@ -219,7 +324,6 @@ async function gestisciPopup(page) {
           }
         }
 
-        // Chiude eventuale popup di login
         const chiudi = document.querySelector(
           'div[role="dialog"] [aria-label="Chiudi"], div[role="dialog"] [aria-label="Close"]'
         );
@@ -265,6 +369,11 @@ async function estraiVideo(page) {
     page.evaluate(() => {
       const regexDurata = /^\d{1,2}:\d{2}(?::\d{2})?$/;
 
+      const toIso = (s) => {
+        const d = new Date(s);
+        return isNaN(d.getTime()) ? null : d.toISOString();
+      };
+
       const idDa = (u) => {
         const m =
           u.match(/\/videos\/(?:[^\/?]+\/)?(\d{6,})/) ||
@@ -295,7 +404,7 @@ async function estraiVideo(page) {
         }
       });
 
-      // 3. Associazione link -> durata, deduplicando per ID video
+      // 3. Associazione link -> durata / data, deduplicando per ID video
       const mappa = new Map();
 
       for (const link of videoLinks) {
@@ -307,33 +416,61 @@ async function estraiVideo(page) {
           durata = matchLink[1];
         }
 
-        if (!durata && durataEls.length > 0) {
-          let container = link.el;
-          for (let i = 0; i < 6 && container && !durata; i++) {
-            const idDiversi = new Set();
-            for (const vl of videoLinks) {
-              if (container.contains(vl.el)) idDiversi.add(vl.id);
-              if (idDiversi.size > 1) break;
-            }
-            if (idDiversi.size > 1) break; // contenitore troppo ampio
+        // Risale fino a 6 livelli, fermandosi quando il contenitore include più video diversi.
+        // Tiene il contenitore più grande che contiene UN SOLO video (serve per durata e data).
+        let contenitoreValido = null;
+        let container = link.el;
+        for (let i = 0; i < 6 && container; i++) {
+          const idDiversi = new Set();
+          for (const vl of videoLinks) {
+            if (container.contains(vl.el)) idDiversi.add(vl.id);
+            if (idDiversi.size > 1) break;
+          }
+          if (idDiversi.size > 1) break;
 
+          contenitoreValido = container;
+
+          if (!durata && durataEls.length > 0) {
             const trovata = durataEls.find((d) => container.contains(d.el));
             if (trovata) durata = trovata.txt;
-
-            container = container.parentElement;
           }
+
+          container = container.parentElement;
         }
 
         const article = link.el.closest('div[role="article"]') || link.el.closest('div[data-s2n]') || link.el.parentElement;
         const parentText = article?.innerText || link.el.innerText || '';
-        const timeEl = article?.querySelector('time');
-        const postDate = timeEl ? timeEl.getAttribute('datetime') : null;
+
+        // Data: attributo datetime / data-utime, altrimenti restano le righe brevi per il parsing lato Node
+        const radice = contenitoreValido || article;
+        let postDate = null;
+        const timeEl = (radice && radice.querySelector('time[datetime]')) || (article && article.querySelector('time[datetime]'));
+        if (timeEl) {
+          postDate = toIso(timeEl.getAttribute('datetime'));
+        } else {
+          const abbr = radice && radice.querySelector('abbr[data-utime]');
+          if (abbr) {
+            const secondi = parseInt(abbr.getAttribute('data-utime'), 10);
+            if (!isNaN(secondi)) postDate = toIso(secondi * 1000);
+          }
+        }
+
+        const testoContenitore = radice ? (radice.innerText || '') : '';
+        const righe = testoContenitore
+          .split('\n')
+          .map((s) => s.trim())
+          .filter((s) => s && s.length <= 60)
+          .slice(0, 25);
 
         const esistente = mappa.get(link.id);
         if (esistente) {
           if (!esistente.durata && durata) esistente.durata = durata;
           if (parentText.length > esistente.fullText.length) esistente.fullText = parentText;
-          if (!esistente.postDate && postDate) esistente.postDate = new Date(postDate).toISOString();
+          if (!esistente.postDate && postDate) esistente.postDate = postDate;
+          for (const r of righe) {
+            if (!esistente.righe.includes(r)) esistente.righe.push(r);
+          }
+          esistente.righe = esistente.righe.slice(0, 40);
           // Tiene l'URL più lungo (quello con lo slug), che è il più stabile tra le esecuzioni
           if (link.url.length > esistente.url.length) esistente.url = link.url;
         } else {
@@ -342,7 +479,8 @@ async function estraiVideo(page) {
             url: link.url,
             fullText: parentText,
             durata,
-            postDate: postDate ? new Date(postDate).toISOString() : null
+            postDate,
+            righe
           });
         }
       }
@@ -353,77 +491,113 @@ async function estraiVideo(page) {
   );
 }
 
-// Carica una URL, gestisce i popup, attende i link video, scrolla ed estrae
-async function caricaEdEstrai(page, url, nomeSquadra) {
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
-
-  await sleep(1500);
-  await gestisciPopup(page);
-
-  // Aspetta che compaia almeno un link video (non bloccante)
-  await page
-    .waitForSelector('a[href*="/videos/"], a[href*="/reel/"], a[href*="/watch"]', { timeout: 7000 })
-    .catch(() => {});
-
-  for (let i = 0; i < 4; i++) {
-    await withTimeout(page.evaluate(() => window.scrollBy(0, 1500)), 2000).catch(() => {});
-    await sleep(700);
-    if (i === 1) await gestisciPopup(page);
-  }
+// Un tentativo completo con un browser nuovo. Il browser viene SEMPRE chiuso alla fine.
+async function tentaEstrazione(squadra, ctx) {
+  const browser = await apriBrowser(ctx);
 
   try {
-    return await estraiVideo(page);
-  } catch (err) {
-    console.error(`⚠️ [ESTRAZIONE] ${nomeSquadra}: ${err.message}`);
-    return [];
-  }
-}
-
-async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
-  let browser = null;
-  let page = null;
-
-  try {
-    browser = await puppeteer.launch({
-      headless: 'new',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu',
-        '--disable-software-rasterizer',
-        '--disable-extensions',
-        '--lang=it-IT'
-      ]
-    });
-
-    page = await browser.newPage();
+    const page = await browser.newPage();
     page.setDefaultTimeout(25000);
     page.setDefaultNavigationTimeout(25000);
 
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'it-IT,it;q=0.9,en;q=0.8' });
 
+    // Risparmia memoria: niente video e font (le durate sono testo, quindi non servono)
+    try {
+      await page.setRequestInterception(true);
+      page.on('request', (req) => {
+        const tipo = req.resourceType();
+        if (tipo === 'media' || tipo === 'font') {
+          Promise.resolve(req.abort()).catch(() => {});
+        } else {
+          Promise.resolve(req.continue()).catch(() => {});
+        }
+      });
+    } catch (e) {}
+
     const urlVideos = costruisciUrlVideos(squadra.facebook_page_url);
-    let rawItems = await caricaEdEstrai(page, urlVideos, squadra.nome);
+    await page.goto(urlVideos, { waitUntil: 'domcontentloaded', timeout: 25000 });
 
-    // Tentativo di ripiego: se non trova nulla, diagnostica e riprova dalla pagina principale
-    if (rawItems.length === 0) {
+    if (paginaDiLogin(page)) return { items: [], loginWall: true, errore: false };
+
+    await sleep(1500);
+    await gestisciPopup(page);
+
+    if (paginaDiLogin(page)) return { items: [], loginWall: true, errore: false };
+
+    // Aspetta che compaia almeno un link video (non bloccante)
+    await page
+      .waitForSelector('a[href*="/videos/"], a[href*="/reel/"], a[href*="/watch"]', { timeout: 7000 })
+      .catch(() => {});
+
+    for (let i = 0; i < 4; i++) {
+      await withTimeout(page.evaluate(() => window.scrollBy(0, 1500)), 2000).catch(() => {});
+      await sleep(700);
+      if (i === 1) await gestisciPopup(page);
+    }
+
+    if (paginaDiLogin(page)) return { items: [], loginWall: true, errore: false };
+
+    const items = await estraiVideo(page);
+
+    if (items.length === 0) {
       await diagnosticaPagina(page, squadra.nome);
-      console.log(`🔁 [RETRY] ${squadra.nome}: riprovo dalla pagina principale.`);
-      rawItems = await caricaEdEstrai(page, squadra.facebook_page_url, squadra.nome);
+    }
 
-      if (rawItems.length === 0) {
-        await diagnosticaPagina(page, squadra.nome);
+    return { items, loginWall: false, errore: false };
+  } catch (err) {
+    console.error(`⚠️ [TENTATIVO] ${squadra.nome}: ${err.message}`);
+    return { items: [], loginWall: false, errore: true };
+  } finally {
+    await killBrowser(browser);
+    ctx.browser = null;
+  }
+}
+
+async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite, ctx) {
+  try {
+    // ---------- FASE 1: estrazione (con retry in caso di login wall o errore) ----------
+    let rawItems = [];
+    let ultimoLoginWall = false;
+
+    for (let t = 1; t <= MAX_TENTATIVI && !ctx.annullato; t++) {
+      const esito = await tentaEstrazione(squadra, ctx);
+      rawItems = esito.items;
+      ultimoLoginWall = esito.loginWall;
+
+      if (rawItems.length > 0) break;
+      if (!esito.loginWall && !esito.errore) break; // pagina caricata ma davvero senza video: inutile riprovare
+
+      if (t < MAX_TENTATIVI) {
+        console.log(`🔁 [RETRY] ${squadra.nome}: ${esito.loginWall ? 'Facebook mostra il login' : 'errore'}, riprovo con un browser nuovo (tentativo ${t + 1}/${MAX_TENTATIVI}).`);
+        await sleep(4000 + Math.random() * 4000);
       }
     }
 
-    const conDurata = rawItems.filter((r) => r.durata).length;
-    console.log(`🔍 [DEBUG] ${squadra.nome}: Trovati ${rawItems.length} elementi univoci (${conDurata} con durata).`);
+    if (ctx.annullato) return;
 
+    if (rawItems.length === 0 && ultimoLoginWall) {
+      console.log(`🚧 [LOGIN WALL] ${squadra.nome}: Facebook ha reindirizzato al login anche dopo ${MAX_TENTATIVI} tentativi.`);
+    }
+
+    const conDurata = rawItems.filter((r) => r.durata).length;
+    const dateStimate = new Map();
+    for (const item of rawItems) dateStimate.set(item.id, stimaDataVideo(item));
+    const conData = rawItems.filter((r) => dateStimate.get(r.id)).length;
+
+    console.log(`🔍 [DEBUG] ${squadra.nome}: Trovati ${rawItems.length} elementi univoci (${conDurata} con durata, ${conData} con data).`);
+
+    // Aiuto per capire come Facebook mostra la data quando non riusciamo a leggerla
+    let campioni = 0;
+    for (const item of rawItems) {
+      if (!dateStimate.get(item.id) && campioni < 2) {
+        console.log(`🧪 [DATA?] ${squadra.nome}: data non leggibile. Righe brevi del contenitore:`, JSON.stringify((item.righe || []).slice(0, 10)));
+        campioni++;
+      }
+    }
+
+    // ---------- FASE 2: abbinamento alle partite e salvataggio ----------
     const avversariStessoGirone = squadra.girone
       ? tutteLeSquadre.filter(s => s.girone === squadra.girone && s.id_squadra !== squadra.id_squadra)
       : tutteLeSquadre.filter(s => s.id_squadra !== squadra.id_squadra);
@@ -432,10 +606,25 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       p => p.id_squadra_casa === squadra.id_squadra || p.id_squadra_ospite === squadra.id_squadra
     );
 
+    let scartatiData = 0;
+    let dataSconosciuta = 0;
     let scartatiClassificazione = 0;
     let scartatiPartita = 0;
 
     for (const item of rawItems) {
+      // Filtro data
+      const dataVideo = dateStimate.get(item.id) || null;
+      if (dataVideo) {
+        if (dataVideo.getTime() < DATA_MINIMA.getTime()) {
+          scartatiData++;
+          console.log(`      ⏭️ Scartato per data (${dataVideo.toLocaleDateString('it-IT')}): ${item.url}`);
+          continue;
+        }
+      } else {
+        dataSconosciuta++;
+        if (SCARTA_SE_DATA_SCONOSCIUTA) continue;
+      }
+
       const categoriaTitolo = classificaTitoloVideo(item.fullText);
       if (!categoriaTitolo) {
         scartatiClassificazione++;
@@ -483,7 +672,7 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       if (partiteCandidate.length === 1) {
         partitaScelta = partiteCandidate[0];
       } else if (partiteCandidate.length > 1) {
-        const dataPost = item.postDate ? new Date(item.postDate) : new Date();
+        const dataPost = dataVideo || new Date();
         partiteCandidate.sort((a, b) => {
           return differenzaGiorni(dataPost, new Date(a.data_partita)) - differenzaGiorni(dataPost, new Date(b.data_partita));
         });
@@ -520,19 +709,15 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite) {
       if (dbError) {
         console.error(`      ❌ Errore Supabase UPSERT:`, dbError.message);
       } else {
-        console.log(`      🎉 SALVATAGGIO OK -> [${categoriaTitolo}] (Durata: ${item.durata || 'N/D'}) Partita ID ${partitaScelta.id_partita}: ${item.url}`);
+        console.log(`      🎉 SALVATAGGIO OK -> [${categoriaTitolo}] (Durata: ${item.durata || 'N/D'}${dataVideo ? ', Data: ' + dataVideo.toLocaleDateString('it-IT') : ''}) Partita ID ${partitaScelta.id_partita}: ${item.url}`);
       }
     }
 
     if (rawItems.length > 0) {
-      console.log(`📊 [RIEPILOGO] ${squadra.nome}: ${scartatiClassificazione} scartati dal classificatore, ${scartatiPartita} senza partita abbinata.`);
+      console.log(`📊 [RIEPILOGO] ${squadra.nome}: ${scartatiData} scartati per data (prima del ${DATA_MINIMA.toLocaleDateString('it-IT')}), ${scartatiClassificazione} dal classificatore, ${scartatiPartita} senza partita abbinata, ${dataSconosciuta} senza data leggibile${SCARTA_SE_DATA_SCONOSCIUTA ? ' (scartati)' : ' (salvati comunque)'}.`);
     }
-
   } catch (err) {
     console.error(`❌ [ERRORE CRITICO] Squadra ${squadra.nome}:`, err.message);
-  } finally {
-    if (page) await page.close().catch(() => {});
-    await killBrowser(browser);
   }
 }
 
@@ -554,14 +739,21 @@ async function eseguiScrapingInBackground(offset, limit) {
       console.log(`Scansione (${counter}/${tutteSquadre.length}) per: ${squadra.nome}`);
       console.log(`========================================`);
 
+      await pulisciChrome();
+
+      const ctx = { browser: null, annullato: false };
       try {
-        // Timeout alzato a 75s perché ora può esserci un secondo tentativo
-        await withTimeout(scansionaSquadra(squadra, tutteSquadre, tutteLePartite), 75000);
+        await withTimeout(scansionaSquadra(squadra, tutteSquadre, tutteLePartite, ctx), TIMEOUT_SQUADRA_MS);
       } catch (err) {
+        ctx.annullato = true;
         console.error(`⚠️ Salto ${squadra.nome}: ${err.message}`);
+      } finally {
+        // Qualunque cosa sia successa, il browser di questa squadra deve morire
+        await killBrowser(ctx.browser);
+        ctx.browser = null;
       }
 
-      await sleep(1500);
+      await sleep(2500 + Math.random() * 3000);
       if (global.gc) global.gc();
     }
 
