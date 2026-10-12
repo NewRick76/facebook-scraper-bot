@@ -22,9 +22,9 @@ const SCARTA_SE_DATA_SCONOSCIUTA = true;
 // Quante volte provare una pagina (con browser nuovo) se Facebook mostra il login
 const MAX_TENTATIVI = 3;
 
-// Pausa tra una squadra e l'altra (ms), con una parte casuale, per non farsi bloccare da Facebook
-const PAUSA_TRA_SQUADRE_MIN_MS = 6000;
-const PAUSA_TRA_SQUADRE_RANDOM_MS = 6000;
+// Pausa aumentata tra una squadra e l'altra (ms), con una parte casuale, per dare tregua all'IP ed evitare il Login Wall
+const PAUSA_TRA_SQUADRE_MIN_MS = 10000;
+const PAUSA_TRA_SQUADRE_RANDOM_MS = 10000;
 
 // Tempo massimo per una singola squadra (tutti i tentativi compresi)
 const TIMEOUT_SQUADRA_MS = 200000;
@@ -172,7 +172,6 @@ function secondiInFormattata(secondi) {
 }
 
 // Stima la data del video da attributo datetime o da righe brevi, in italiano O in inglese
-// (es. "3 giorni fa", "3 days ago", "Yesterday", "Apr 12", "April 12, 2026", "12 aprile")
 function stimaDataVideo(item) {
   const adesso = new Date();
 
@@ -192,7 +191,6 @@ function stimaDataVideo(item) {
     if (mese === undefined) return null;
     const anno = annoStr ? parseInt(annoStr, 10) : adesso.getFullYear();
     let d = new Date(anno, mese, giorno, 12, 0, 0);
-    // Senza anno esplicito, una data nel futuro appartiene all'anno scorso
     if (!annoStr && d.getTime() > adesso.getTime() + 86400000) {
       d = new Date(anno - 1, mese, giorno, 12, 0, 0);
     }
@@ -205,7 +203,6 @@ function stimaDataVideo(item) {
 
     if (/^(just now|adesso|ora|proprio ora)$/.test(l)) return adesso;
 
-    // Relative: italiano + inglese
     if ((m = l.match(/^(\d+)\s*(?:min|mins|minute|minutes|minuti|minuto|m)\b(?:\s*ago|\s*fa)?$/))) return new Date(adesso.getTime() - parseInt(m[1], 10) * 60000);
     if ((m = l.match(/^(\d+)\s*(?:h|hr|hrs|hour|hours|ore|ora)\b(?:\s*ago|\s*fa)?$/))) return new Date(adesso.getTime() - parseInt(m[1], 10) * 3600000);
     if ((m = l.match(/^(\d+)\s*(?:d|day|days|g|gg|giorni|giorno)\b(?:\s*ago|\s*fa)?$/))) return new Date(adesso.getTime() - parseInt(m[1], 10) * 86400000);
@@ -216,14 +213,12 @@ function stimaDataVideo(item) {
     if ((m = l.match(/^(\d+)\s*(?:y|yr|yrs|year|years|anni|anno)\b(?:\s*ago|\s*fa)?$/))) return new Date(adesso.getTime() - parseInt(m[1], 10) * 365 * 86400000);
     if (/^(yesterday|ieri)\b/.test(l)) return new Date(adesso.getTime() - 86400000);
 
-    // Assolute: "12 aprile", "12 apr 2026"
     m = l.match(new RegExp(`^(\\d{1,2})\\s+${REGEX_MESE}(?:,?\\s+(\\d{4}))?`));
     if (m) {
       const d = costruisciData(parseInt(m[1], 10), m[2], m[3]);
       if (d) return d;
     }
 
-    // Assolute inglesi: "Apr 12", "April 12, 2026"
     m = l.match(new RegExp(`^${REGEX_MESE}\\s+(\\d{1,2})(?:,?\\s+(\\d{4}))?`));
     if (m) {
       const d = costruisciData(parseInt(m[2], 10), m[1], m[3]);
@@ -251,7 +246,6 @@ function withTimeout(promise, ms) {
   return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
 }
 
-// Ultima risorsa: uccide eventuali processi Chrome rimasti vivi (se pkill non esiste nel container, non fa nulla)
 function pulisciChrome() {
   return new Promise((resolve) => {
     try {
@@ -282,7 +276,6 @@ async function killBrowser(browser) {
   } catch (e) {}
 }
 
-// Lancia Chromium; se non parte (memoria satura) ripulisce e riprova una volta
 async function apriBrowser(ctx) {
   const opzioni = {
     headless: 'new',
@@ -312,7 +305,6 @@ async function apriBrowser(ctx) {
   return ctx.browser;
 }
 
-// Costruisce l'URL della sezione video di una pagina Facebook
 function costruisciUrlVideos(baseUrl) {
   if (baseUrl.includes('profile.php')) {
     return baseUrl.includes('?') ? `${baseUrl}&sk=videos` : `${baseUrl}?sk=videos`;
@@ -328,7 +320,6 @@ function paginaDiLogin(page) {
   }
 }
 
-// Prova a chiudere banner cookie e popup di login
 async function gestisciPopup(page) {
   try {
     await withTimeout(
@@ -366,7 +357,6 @@ async function gestisciPopup(page) {
   } catch (e) {}
 }
 
-// Diagnostica: aiuta a capire perché una pagina restituisce 0 video
 async function diagnosticaPagina(page, nomeSquadra) {
   try {
     const info = await withTimeout(
@@ -391,7 +381,6 @@ async function diagnosticaPagina(page, nomeSquadra) {
   }
 }
 
-// Estrazione video dalla pagina corrente (una passata leggera + deduplicazione per ID video)
 async function estraiVideo(page) {
   return withTimeout(
     page.evaluate(() => {
@@ -410,7 +399,6 @@ async function estraiVideo(page) {
         return m ? m[1] : u.split('?')[0];
       };
 
-      // 1. Link video validi
       const videoLinks = [];
       document.querySelectorAll('a').forEach((a) => {
         const href = a.href || '';
@@ -421,7 +409,6 @@ async function estraiVideo(page) {
         }
       });
 
-      // 2. Elementi foglia il cui testo è ESATTAMENTE una durata
       const durataEls = [];
       document.querySelectorAll('span, div').forEach((el) => {
         if (el.children.length === 0) {
@@ -432,7 +419,6 @@ async function estraiVideo(page) {
         }
       });
 
-      // 3. Associazione link -> durata / data, deduplicando per ID video
       const mappa = new Map();
 
       for (const link of videoLinks) {
@@ -444,8 +430,6 @@ async function estraiVideo(page) {
           durata = matchLink[1];
         }
 
-        // Risale fino a 6 livelli, fermandosi quando il contenitore include più video diversi.
-        // Tiene il contenitore più grande che contiene UN SOLO video (serve per durata e data).
         let contenitoreValido = null;
         let container = link.el;
         for (let i = 0; i < 6 && container; i++) {
@@ -469,7 +453,6 @@ async function estraiVideo(page) {
         const article = link.el.closest('div[role="article"]') || link.el.closest('div[data-s2n]') || link.el.parentElement;
         const parentText = article?.innerText || link.el.innerText || '';
 
-        // Data: attributo datetime / data-utime, altrimenti restano le righe brevi per il parsing lato Node
         const radice = contenitoreValido || article;
         let postDate = null;
         const timeEl = (radice && radice.querySelector('time[datetime]')) || (article && article.querySelector('time[datetime]'));
@@ -499,7 +482,6 @@ async function estraiVideo(page) {
             if (!esistente.righe.includes(r)) esistente.righe.push(r);
           }
           esistente.righe = esistente.righe.slice(0, 40);
-          // Tiene l'URL più lungo (quello con lo slug), che è il più stabile tra le esecuzioni
           if (link.url.length > esistente.url.length) esistente.url = link.url;
         } else {
           mappa.set(link.id, {
@@ -519,7 +501,6 @@ async function estraiVideo(page) {
   );
 }
 
-// Un tentativo completo con un browser nuovo. Il browser viene SEMPRE chiuso alla fine.
 async function tentaEstrazione(squadra, ctx) {
   const browser = await apriBrowser(ctx);
 
@@ -528,10 +509,15 @@ async function tentaEstrazione(squadra, ctx) {
     page.setDefaultTimeout(25000);
     page.setDefaultNavigationTimeout(25000);
 
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-    await page.setExtraHTTPHeaders({ 'Accept-Language': 'it-IT,it;q=0.9,en;q=0.8' });
+    // User-Agent aggiornato e header realistici per evitare il rilevamento come bot
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
+    await page.setExtraHTTPHeaders({ 
+      'Accept-Language': 'it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7',
+      'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+      'Sec-Ch-Ua-Mobile': '?0',
+      'Sec-Ch-Ua-Platform': '"Windows"'
+    });
 
-    // Risparmia memoria: niente video e font (le durate sono testo, quindi non servono)
     try {
       await page.setRequestInterception(true);
       page.on('request', (req) => {
@@ -554,7 +540,6 @@ async function tentaEstrazione(squadra, ctx) {
 
     if (paginaDiLogin(page)) return { items: [], loginWall: true, errore: false };
 
-    // Aspetta che compaia almeno un link video (non bloccante)
     await page
       .waitForSelector('a[href*="/videos/"], a[href*="/reel/"], a[href*="/watch"]', { timeout: 7000 })
       .catch(() => {});
@@ -585,7 +570,6 @@ async function tentaEstrazione(squadra, ctx) {
 
 async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite, ctx) {
   try {
-    // ---------- FASE 1: estrazione (con retry in caso di login wall o errore) ----------
     let rawItems = [];
     let ultimoLoginWall = false;
 
@@ -595,11 +579,10 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite, ctx) {
       ultimoLoginWall = esito.loginWall;
 
       if (rawItems.length > 0) break;
-      if (!esito.loginWall && !esito.errore) break; // pagina caricata ma davvero senza video: inutile riprovare
+      if (!esito.loginWall && !esito.errore) break;
 
       if (t < MAX_TENTATIVI) {
         console.log(`🔁 [RETRY] ${squadra.nome}: ${esito.loginWall ? 'Facebook mostra il login' : 'errore'}, riprovo con un browser nuovo (tentativo ${t + 1}/${MAX_TENTATIVI}).`);
-        // Pausa crescente: più è lunga, più è probabile che il blocco passi
         await sleep(8000 * t + Math.random() * 6000);
       }
     }
@@ -617,7 +600,6 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite, ctx) {
 
     console.log(`🔍 [DEBUG] ${squadra.nome}: Trovati ${rawItems.length} elementi univoci (${conDurata} con durata, ${conData} con data).`);
 
-    // Aiuto per capire come Facebook mostra la data quando non riusciamo a leggerla
     let campioni = 0;
     for (const item of rawItems) {
       if (!dateStimate.get(item.id) && campioni < 2) {
@@ -626,7 +608,6 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite, ctx) {
       }
     }
 
-    // ---------- FASE 2: abbinamento alle partite e salvataggio ----------
     const avversariStessoGirone = squadra.girone
       ? tutteLeSquadre.filter(s => s.girone === squadra.girone && s.id_squadra !== squadra.id_squadra)
       : tutteLeSquadre.filter(s => s.id_squadra !== squadra.id_squadra);
@@ -641,18 +622,17 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite, ctx) {
     let scartatiPartita = 0;
 
     for (const item of rawItems) {
-      // Filtro data
       const dataVideo = dateStimate.get(item.id) || null;
       if (dataVideo) {
         if (dataVideo.getTime() < DATA_MINIMA.getTime()) {
           scartatiData++;
-          console.log(`      ⏭️ Scartato per data (${formattaData(dataVideo)}): ${item.url}`);
+          console.log(`     ⏭️ Scartato per data (${formattaData(dataVideo)}): ${item.url}`);
           continue;
         }
       } else {
         dataSconosciuta++;
         if (SCARTA_SE_DATA_SCONOSCIUTA) {
-          console.log(`      ⏭️ Scartato (data non leggibile): ${item.url}`);
+          console.log(`     ⏭️ Scartato (data non leggibile): ${item.url}`);
           continue;
         }
       }
@@ -724,7 +704,6 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite, ctx) {
         piattaforma: 'facebook'
       };
 
-      // La durata viene scritta solo se trovata, così non sovrascrive valori già presenti con null
       const secondi = durataInSecondi(item.durata);
       if (secondi != null) {
         payloadUpsert.durata_secondi = secondi;
@@ -739,9 +718,9 @@ async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite, ctx) {
       );
 
       if (dbError) {
-        console.error(`      ❌ Errore Supabase UPSERT:`, dbError.message);
+        console.error(`     ❌ Errore Supabase UPSERT:`, dbError.message);
       } else {
-        console.log(`      🎉 SALVATAGGIO OK -> [${categoriaTitolo}] (Durata: ${item.durata || 'N/D'}${dataVideo ? ', Data: ' + formattaData(dataVideo) : ''}) Partita ID ${partitaScelta.id_partita}: ${item.url}`);
+        console.log(`     🎉 SALVATAGGIO OK -> [${categoriaTitolo}] (Durata: ${item.durata || 'N/D'}${dataVideo ? ', Data: ' + formattaData(dataVideo) : ''}) Partita ID ${partitaScelta.id_partita}: ${item.url}`);
       }
     }
 
@@ -780,7 +759,6 @@ async function eseguiScrapingInBackground(offset, limit) {
         ctx.annullato = true;
         console.error(`⚠️ Salto ${squadra.nome}: ${err.message}`);
       } finally {
-        // Qualunque cosa sia successa, il browser di questa squadra deve morire
         await killBrowser(ctx.browser);
         ctx.browser = null;
       }
