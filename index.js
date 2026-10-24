@@ -3,37 +3,60 @@ import puppeteer from 'puppeteer';
 import { createClient } from '@supabase/supabase-js';
 import WebSocket from 'ws';
 import { exec } from 'child_process';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const app = express();
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
-// ===================== CONFIGURAZIONE =====================
-// Metti true SOLO se durata_formattata NON si calcola da sola dal valore di durata_secondi
-const SCRIVI_DURATA_FORMATTATA = false;
-
-// Video più vecchi di questa data vengono ignorati (puoi cambiarla con la variabile d'ambiente DATA_MINIMA)
-const DATA_MINIMA = new Date(process.env.DATA_MINIMA || '2026-09-22T00:00:00+02:00');
-
-// Se true, scarta anche i video di cui non si riesce a leggere la data
-const SCARTA_SE_DATA_SCONOSCIUTA = true;
-
-// Quante volte provare una pagina (con browser nuovo) se Facebook mostra il login
-const MAX_TENTATIVI = 3;
-
-// Pausa aumentata tra una squadra e l'altra (ms), con una parte casuale, per dare tregua all'IP ed evitare il Login Wall
-const PAUSA_TRA_SQUADRE_MIN_MS = 10000;
-const PAUSA_TRA_SQUADRE_RANDOM_MS = 10000;
-
-// Tempo massimo per una singola squadra (tutti i tentativi compresi)
-const TIMEOUT_SQUADRA_MS = 200000;
-// ==========================================================
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  console.error("❌ ERRORE: Verificare che nel file .env ci siano SUPABASE_URL e SUPABASE_KEY valide!");
+  process.exit(1);
+}
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: false },
   realtime: { transport: WebSocket }
 });
+
+// Intercettazione dei log per mostrarli nella pagina HTML della Dashboard
+let logBuffer = [];
+const maxLogLines = 200;
+
+function logToBuffer(tipo, args) {
+  const messaggio = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
+  const timestamp = new Date().toLocaleTimeString('it-IT');
+  logBuffer.push(`[${timestamp}] ${messaggio}`);
+  if (logBuffer.length > maxLogLines) {
+    logBuffer.shift();
+  }
+}
+
+const originalConsoleLog = console.log;
+const originalConsoleError = console.error;
+
+console.log = function(...args) {
+  originalConsoleLog.apply(console, args);
+  logToBuffer('LOG', args);
+};
+
+console.error = function(...args) {
+  originalConsoleError.apply(console, args);
+  logToBuffer('ERR', args);
+};
+
+// ===================== CONFIGURAZIONE =====================
+const DATA_MINIMA = new Date(process.env.DATA_MINIMA || '2026-09-22T00:00:00+02:00');
+const SCARTA_SE_DATA_SCONOSCIUTA = true;
+
+// Pausa prudente tra una squadra e l'altra per proteggere l'IP da Render
+const PAUSA_TRA_SQUADRE_MIN_MS = 8000;
+const PAUSA_TRA_SQUADRE_RANDOM_MS = 7000;
+const TIMEOUT_SQUADRA_MS = 180000;
+// ==========================================================
 
 const NOMI_SQUADRE_MAP = {
   'agrigento': ['agrigento', 'moncada'],
@@ -56,23 +79,20 @@ function classificaTitoloVideo(testo) {
   if (!testo) return null;
   const t = testo.toLowerCase();
 
-  // 0. ESCLUSIONI PREVENTIVE
   if (
     t.includes('allenament') || t.includes('training') ||
     t.includes('dietro le quinte') || t.includes('backstage') ||
     t.includes('minibasket') || t.includes('giovanil') ||
-    t.includes('scuola basket') ||
-    t.includes('presentazione del main') || t.includes('presentazione maglie') ||
-    t.includes('presentazione roster') || t.includes('presentazione squadra') ||
-    t.includes('presentazione giocatore') || t.includes('presentazione acquisto') ||
-    t.includes('conferme roster') || t.includes('nuovo acquisto') ||
-    t.includes('nuovo giocatore') || t.includes('benvenuto') ||
-    t.includes('firmato') || t.includes('ingaggio')
+    t.includes('scuola basket') || t.includes('presentazione del main') ||
+    t.includes('presentazione maglie') || t.includes('presentazione roster') ||
+    t.includes('presentazione squadra') || t.includes('presentazione giocatore') ||
+    t.includes('presentazione acquisto') || t.includes('conferme roster') ||
+    t.includes('nuovo acquisto') || t.includes('nuovo giocatore') ||
+    t.includes('benvenuto') || t.includes('firmato') || t.includes('ingaggio')
   ) {
     return null;
   }
 
-  // 1. HIGHLIGHTS
   if (
     t.includes('highlight') || t.includes('sintesi') ||
     t.includes('azioni salienti') || t.includes('top 10') ||
@@ -82,7 +102,6 @@ function classificaTitoloVideo(testo) {
     return 'Highlights';
   }
 
-  // 2. POST-PARTITA
   if (
     t.includes('postpartita') || t.includes('post-partita') ||
     t.includes('post gara') || t.includes('dopo gara') ||
@@ -97,7 +116,6 @@ function classificaTitoloVideo(testo) {
     return 'Post-Partita';
   }
 
-  // 3. PREPARTITA
   if (
     t.includes('prepartita') || t.includes('pre-partita') ||
     t.includes('pre gara') || t.includes('anteprima') ||
@@ -113,19 +131,12 @@ function classificaTitoloVideo(testo) {
     return 'Prepartita';
   }
 
-  // 4. CONTROLLI DI RIPIEGO
-  if (t.includes('coach') || t.includes('parole') || t.includes('intervista')) {
-    if (t.includes('dopo la gara') || t.includes('vittoria') || t.includes('sconfitta') || t.includes('al termine')) return 'Post-Partita';
-    if (t.includes('sfida') || t.includes('match') || t.includes('prossima gara') || t.includes('prossimo match') || t.includes('domenica')) return 'Prepartita';
-  }
-
   return null;
 }
 
 function estraiNumeroGiornata(testo) {
   if (!testo) return null;
   const t = testo.toLowerCase();
-
   const mappaParoleNumero = {
     'prima': 1, 'seconda': 2, 'terza': 3, 'quarta': 4, 'quinta': 5,
     'sesta': 6, 'settima': 7, 'ottava': 8, 'nona': 9, 'decima': 10,
@@ -142,15 +153,11 @@ function estraiNumeroGiornata(testo) {
   }
 
   for (const [parola, num] of Object.entries(mappaParoleNumero)) {
-    if (t.includes(`${parola} giornata`)) {
-      return num;
-    }
+    if (t.includes(`${parola} giornata`)) return num;
   }
-
   return null;
 }
 
-// Converte "2:48" o "1:02:30" in secondi
 function durataInSecondi(str) {
   if (!str) return null;
   const parti = str.trim().split(':').map(Number);
@@ -160,30 +167,14 @@ function durataInSecondi(str) {
   return null;
 }
 
-// Converte secondi in "m:ss" oppure "h:mm:ss"
-function secondiInFormattata(secondi) {
-  if (secondi == null) return null;
-  const h = Math.floor(secondi / 3600);
-  const m = Math.floor((secondi % 3600) / 60);
-  const s = secondi % 60;
-  return h > 0
-    ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-    : `${m}:${String(s).padStart(2, '0')}`;
-}
-
-// Stima la data del video da attributo datetime o da righe brevi, in italiano O in inglese
 function stimaDataVideo(item) {
   const adesso = new Date();
-
   if (item.postDate) {
     const d = new Date(item.postDate);
     if (!isNaN(d.getTime())) return d;
   }
 
-  const MESI = {
-    gen: 0, jan: 0, feb: 1, mar: 2, apr: 3, mag: 4, may: 4, giu: 5, jun: 5,
-    lug: 6, jul: 6, ago: 7, aug: 7, set: 8, sep: 8, ott: 9, oct: 9, nov: 10, dic: 11, dec: 11
-  };
+  const MESI = { gen: 0, jan: 0, feb: 1, mar: 2, apr: 3, mag: 4, may: 4, giu: 5, jun: 5, lug: 6, jul: 6, ago: 7, aug: 7, set: 8, sep: 8, ott: 9, oct: 9, nov: 10, dic: 11, dec: 11 };
   const REGEX_MESE = '(gen|jan|feb|mar|apr|mag|may|giu|jun|lug|jul|ago|aug|set|sep|ott|oct|nov|dic|dec)[a-zà]*\\.?';
 
   const costruisciData = (giorno, meseKey, annoStr) => {
@@ -200,9 +191,7 @@ function stimaDataVideo(item) {
   for (const riga of item.righe || []) {
     const l = riga.toLowerCase().replace(/^[\s·•\-–—]+/, '').trim();
     let m;
-
     if (/^(just now|adesso|ora|proprio ora)$/.test(l)) return adesso;
-
     if ((m = l.match(/^(\d+)\s*(?:min|mins|minute|minutes|minuti|minuto|m)\b(?:\s*ago|\s*fa)?$/))) return new Date(adesso.getTime() - parseInt(m[1], 10) * 60000);
     if ((m = l.match(/^(\d+)\s*(?:h|hr|hrs|hour|hours|ore|ora)\b(?:\s*ago|\s*fa)?$/))) return new Date(adesso.getTime() - parseInt(m[1], 10) * 3600000);
     if ((m = l.match(/^(\d+)\s*(?:d|day|days|g|gg|giorni|giorno)\b(?:\s*ago|\s*fa)?$/))) return new Date(adesso.getTime() - parseInt(m[1], 10) * 86400000);
@@ -218,14 +207,7 @@ function stimaDataVideo(item) {
       const d = costruisciData(parseInt(m[1], 10), m[2], m[3]);
       if (d) return d;
     }
-
-    m = l.match(new RegExp(`^${REGEX_MESE}\\s+(\\d{1,2})(?:,?\\s+(\\d{4}))?`));
-    if (m) {
-      const d = costruisciData(parseInt(m[2], 10), m[1], m[3]);
-      if (d) return d;
-    }
   }
-
   return null;
 }
 
@@ -248,11 +230,7 @@ function withTimeout(promise, ms) {
 
 function pulisciChrome() {
   return new Promise((resolve) => {
-    try {
-      exec('pkill -9 chrome', () => resolve());
-    } catch (e) {
-      resolve();
-    }
+    try { exec('pkill -9 chrome', () => resolve()); } catch (e) { resolve(); }
   });
 }
 
@@ -260,44 +238,20 @@ async function killBrowser(browser) {
   if (!browser) return;
   let proc = null;
   try { proc = browser.process(); } catch (e) {}
-
-  try {
-    await withTimeout(browser.close(), 5000);
-  } catch (e) {}
-
-  try {
-    if (proc && proc.pid) {
-      try {
-        process.kill(-proc.pid, 'SIGKILL');
-      } catch (e) {
-        proc.kill('SIGKILL');
-      }
-    }
-  } catch (e) {}
+  try { await withTimeout(browser.close(), 5000); } catch (e) {}
+  try { if (proc && proc.pid) process.kill(-proc.pid, 'SIGKILL'); } catch (e) {}
 }
 
 async function apriBrowser(ctx) {
   const opzioni = {
     headless: 'new',
     timeout: 60000,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--disable-gpu',
-      '--disable-software-rasterizer',
-      '--disable-extensions',
-      '--lang=it-IT'
-    ]
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--lang=it-IT']
   };
-
   try {
     ctx.browser = await puppeteer.launch(opzioni);
   } catch (err) {
-    console.error(`⚠️ [LAUNCH] Chromium non è partito (${err.message}). Pulisco e riprovo.`);
+    console.error(`⚠️ [LAUNCH] Errore avvio browser: ${err.message}`);
     await pulisciChrome();
     await sleep(3000);
     ctx.browser = await puppeteer.launch(opzioni);
@@ -313,255 +267,95 @@ function costruisciUrlVideos(baseUrl) {
 }
 
 function paginaDiLogin(page) {
-  try {
-    return /facebook\.com\/(login|checkpoint)/i.test(page.url());
-  } catch (e) {
-    return false;
-  }
+  try { return /facebook\.com\/(login|checkpoint)/i.test(page.url()); } catch (e) { return false; }
 }
 
 async function gestisciPopup(page) {
   try {
-    await withTimeout(
-      page.evaluate(() => {
-        const testi = [
-          'rifiuta cookie facoltativi',
-          'decline optional cookies',
-          'consenti solo i cookie essenziali',
-          'only allow essential cookies',
-          'consenti tutti i cookie',
-          'allow all cookies',
-          'accetta tutti',
-          'consenti cookie essenziali e facoltativi'
-        ];
-        const bottoni = Array.from(document.querySelectorAll('div[role="button"], button, span'));
-        for (const testo of testi) {
-          const b = bottoni.find((el) => (el.innerText || '').trim().toLowerCase() === testo);
-          if (b) {
-            b.click();
-            break;
-          }
-        }
-
-        const chiudi = document.querySelector(
-          'div[role="dialog"] [aria-label="Chiudi"], div[role="dialog"] [aria-label="Close"]'
-        );
-        if (chiudi) chiudi.click();
-      }),
-      3000
-    );
+    await withTimeout(page.evaluate(() => {
+      const testi = ['rifiuta cookie facoltativi', 'decline optional cookies', 'accetta tutti', 'allow all cookies'];
+      const bottoni = Array.from(document.querySelectorAll('div[role="button"], button, span'));
+      for (const testo of testi) {
+        const b = bottoni.find((el) => (el.innerText || '').trim().toLowerCase() === testo);
+        if (b) { b.click(); break; }
+      }
+    }), 3000);
   } catch (e) {}
-
-  try {
-    await page.keyboard.press('Escape');
-  } catch (e) {}
-}
-
-async function diagnosticaPagina(page, nomeSquadra) {
-  try {
-    const info = await withTimeout(
-      page.evaluate(() => {
-        const body = (document.body?.innerText || '').toLowerCase();
-        return {
-          url: location.href,
-          title: document.title,
-          loginForm: !!document.querySelector('input[name="pass"]'),
-          testoLogin: body.includes('accedi a facebook') || body.includes('log in to facebook') || body.includes('devi accedere') || body.includes('you must log in'),
-          testoCookie: body.includes('cookie'),
-          nLinkTotali: document.querySelectorAll('a').length,
-          nLinkVideoLike: document.querySelectorAll('a[href*="/videos/"], a[href*="/reel/"], a[href*="/watch"]').length,
-          snippet: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 200)
-        };
-      }),
-      4000
-    );
-    console.log(`🩺 [DIAGNOSI] ${nomeSquadra}:`, JSON.stringify(info));
-  } catch (e) {
-    console.log(`🩺 [DIAGNOSI] ${nomeSquadra}: impossibile leggere la pagina (${e.message})`);
-  }
+  try { await page.keyboard.press('Escape'); } catch (e) {}
 }
 
 async function estraiVideo(page) {
-  return withTimeout(
-    page.evaluate(() => {
-      const regexDurata = /^\d{1,2}:\d{2}(?::\d{2})?$/;
+  return withTimeout(page.evaluate(() => {
+    const regexDurata = /^\d{1,2}:\d{2}(?::\d{2})?$/;
+    const toIso = (s) => { const d = new Date(s); return isNaN(d.getTime()) ? null : d.toISOString(); };
+    const idDa = (u) => {
+      const m = u.match(/\/videos\/(?:[^\/?]+\/)?(\d{6,})/) || u.match(/\/reel\/(\d+)/) || u.match(/[?&]v=(\d+)/);
+      return m ? m[1] : u.split('?')[0];
+    };
 
-      const toIso = (s) => {
-        const d = new Date(s);
-        return isNaN(d.getTime()) ? null : d.toISOString();
-      };
-
-      const idDa = (u) => {
-        const m =
-          u.match(/\/videos\/(?:[^\/?]+\/)?(\d{6,})/) ||
-          u.match(/\/reel\/(\d+)/) ||
-          u.match(/[?&]v=(\d+)/);
-        return m ? m[1] : u.split('?')[0];
-      };
-
-      const videoLinks = [];
-      document.querySelectorAll('a').forEach((a) => {
-        const href = a.href || '';
-        const isVideo = href.includes('/videos/') || href.includes('/watch') || href.includes('/reel/') || href.includes('story.php');
-        const isNotGeneric = href !== 'https://www.facebook.com/watch/' && !href.endsWith('/videos/') && !href.endsWith('/videos');
-        if (isVideo && isNotGeneric) {
-          videoLinks.push({ el: a, url: href.split('?')[0], id: idDa(href) });
-        }
-      });
-
-      const durataEls = [];
-      document.querySelectorAll('span, div').forEach((el) => {
-        if (el.children.length === 0) {
-          const txt = (el.textContent || '').trim();
-          if (txt.length <= 8 && regexDurata.test(txt)) {
-            durataEls.push({ el, txt });
-          }
-        }
-      });
-
-      const mappa = new Map();
-
-      for (const link of videoLinks) {
-        let durata = null;
-
-        const testoLink = (link.el.innerText || '').trim();
-        const matchLink = testoLink.match(/\b(\d{1,2}:\d{2}(?::\d{2})?)\b/);
-        if (matchLink && regexDurata.test(matchLink[1]) && testoLink.length <= 12) {
-          durata = matchLink[1];
-        }
-
-        let contenitoreValido = null;
-        let container = link.el;
-        for (let i = 0; i < 6 && container; i++) {
-          const idDiversi = new Set();
-          for (const vl of videoLinks) {
-            if (container.contains(vl.el)) idDiversi.add(vl.id);
-            if (idDiversi.size > 1) break;
-          }
-          if (idDiversi.size > 1) break;
-
-          contenitoreValido = container;
-
-          if (!durata && durataEls.length > 0) {
-            const trovata = durataEls.find((d) => container.contains(d.el));
-            if (trovata) durata = trovata.txt;
-          }
-
-          container = container.parentElement;
-        }
-
-        const article = link.el.closest('div[role="article"]') || link.el.closest('div[data-s2n]') || link.el.parentElement;
-        const parentText = article?.innerText || link.el.innerText || '';
-
-        const radice = contenitoreValido || article;
-        let postDate = null;
-        const timeEl = (radice && radice.querySelector('time[datetime]')) || (article && article.querySelector('time[datetime]'));
-        if (timeEl) {
-          postDate = toIso(timeEl.getAttribute('datetime'));
-        } else {
-          const abbr = radice && radice.querySelector('abbr[data-utime]');
-          if (abbr) {
-            const secondi = parseInt(abbr.getAttribute('data-utime'), 10);
-            if (!isNaN(secondi)) postDate = toIso(secondi * 1000);
-          }
-        }
-
-        const testoContenitore = radice ? (radice.innerText || '') : '';
-        const righe = testoContenitore
-          .split('\n')
-          .map((s) => s.trim())
-          .filter((s) => s && s.length <= 60)
-          .slice(0, 25);
-
-        const esistente = mappa.get(link.id);
-        if (esistente) {
-          if (!esistente.durata && durata) esistente.durata = durata;
-          if (parentText.length > esistente.fullText.length) esistente.fullText = parentText;
-          if (!esistente.postDate && postDate) esistente.postDate = postDate;
-          for (const r of righe) {
-            if (!esistente.righe.includes(r)) esistente.righe.push(r);
-          }
-          esistente.righe = esistente.righe.slice(0, 40);
-          if (link.url.length > esistente.url.length) esistente.url = link.url;
-        } else {
-          mappa.set(link.id, {
-            id: link.id,
-            url: link.url,
-            fullText: parentText,
-            durata,
-            postDate,
-            righe
-          });
-        }
+    const videoLinks = [];
+    document.querySelectorAll('a').forEach((a) => {
+      const href = a.href || '';
+      if ((href.includes('/videos/') || href.includes('/watch') || href.includes('/reel/')) && href !== 'https://www.facebook.com/watch/') {
+        videoLinks.push({ el: a, url: href.split('?')[0], id: idDa(href) });
       }
-
-      return Array.from(mappa.values());
-    }),
-    15000
-  );
-}
-
-async function tentaEstrazione(squadra, ctx) {
-  const browser = await apriBrowser(ctx);
-
-  try {
-    const page = await browser.newPage();
-    page.setDefaultTimeout(25000);
-    page.setDefaultNavigationTimeout(25000);
-
-    // User-Agent aggiornato e header realistici per evitare il rilevamento come bot
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
-    await page.setExtraHTTPHeaders({ 
-      'Accept-Language': 'it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7',
-      'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-      'Sec-Ch-Ua-Mobile': '?0',
-      'Sec-Ch-Ua-Platform': '"Windows"'
     });
 
-    try {
-      await page.setRequestInterception(true);
-      page.on('request', (req) => {
-        const tipo = req.resourceType();
-        if (tipo === 'media' || tipo === 'font') {
-          Promise.resolve(req.abort()).catch(() => {});
-        } else {
-          Promise.resolve(req.continue()).catch(() => {});
-        }
-      });
-    } catch (e) {}
+    const mappa = new Map();
+    for (const link of videoLinks) {
+      let durata = null;
+      const testoLink = (link.el.innerText || '').trim();
+      const matchLink = testoLink.match(/\b(\d{1,2}:\d{2}(?::\d{2})?)\b/);
+      if (matchLink && regexDurata.test(matchLink[1])) durata = matchLink[1];
 
-    const urlVideos = costruisciUrlVideos(squadra.facebook_page_url);
-    await page.goto(urlVideos, { waitUntil: 'domcontentloaded', timeout: 25000 });
+      let container = link.el;
+      let radice = null;
+      for (let i = 0; i < 5 && container; i++) {
+        radice = container;
+        container = container.parentElement;
+      }
 
-    if (paginaDiLogin(page)) return { items: [], loginWall: true, errore: false };
+      const article = link.el.closest('div[role="article"]') || radice;
+      const parentText = article?.innerText || link.el.innerText || '';
+      const timeEl = article?.querySelector('time[datetime]');
+      const postDate = timeEl ? toIso(timeEl.getAttribute('datetime')) : null;
+      const righe = (article?.innerText || '').split('\n').map(s => s.trim()).filter(s => s && s.length <= 60).slice(0, 25);
+
+      if (!mappa.has(link.id)) {
+        mappa.set(link.id, { id: link.id, url: link.url, fullText: parentText, durata, postDate, righe });
+      }
+    }
+    return Array.from(mappa.values());
+  }), 15000);
+}
+
+// 1 TENTATIVO UNICO OTTIMIZZATO (Niente retry aggressivi che fanno scattare il ban IP)
+async function tentaEstrazioneSingola(squadra, ctx) {
+  const browser = await apriBrowser(ctx);
+  try {
+    const page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
+    
+    await page.goto(costruisciUrlVideos(squadra.facebook_page_url), { waitUntil: 'domcontentloaded', timeout: 25000 });
+    if (paginaDiLogin(page)) {
+      console.log(`🚧 [LOGIN WALL] ${squadra.nome}: Facebook richiede il login.`);
+      return { items: [], loginWall: true };
+    }
 
     await sleep(1500);
     await gestisciPopup(page);
+    if (paginaDiLogin(page)) return { items: [], loginWall: true };
 
-    if (paginaDiLogin(page)) return { items: [], loginWall: true, errore: false };
-
-    await page
-      .waitForSelector('a[href*="/videos/"], a[href*="/reel/"], a[href*="/watch"]', { timeout: 7000 })
-      .catch(() => {});
-
-    for (let i = 0; i < 4; i++) {
-      await withTimeout(page.evaluate(() => window.scrollBy(0, 1500)), 2000).catch(() => {});
-      await sleep(700);
-      if (i === 1) await gestisciPopup(page);
+    for (let i = 0; i < 3; i++) {
+      await page.evaluate(() => window.scrollBy(0, 1500)).catch(() => {});
+      await sleep(1000);
     }
-
-    if (paginaDiLogin(page)) return { items: [], loginWall: true, errore: false };
 
     const items = await estraiVideo(page);
-
-    if (items.length === 0) {
-      await diagnosticaPagina(page, squadra.nome);
-    }
-
-    return { items, loginWall: false, errore: false };
+    return { items, loginWall: false };
   } catch (err) {
     console.error(`⚠️ [TENTATIVO] ${squadra.nome}: ${err.message}`);
-    return { items: [], loginWall: false, errore: true };
+    return { items: [], loginWall: false };
   } finally {
     await killBrowser(browser);
     ctx.browser = null;
@@ -569,179 +363,123 @@ async function tentaEstrazione(squadra, ctx) {
 }
 
 async function scansionaSquadra(squadra, tutteLeSquadre, tutteLePartite, ctx) {
-  try {
-    let rawItems = [];
-    let ultimoLoginWall = false;
+  const esito = await tentaEstrazioneSingola(squadra, ctx);
+  const rawItems = esito.items;
 
-    for (let t = 1; t <= MAX_TENTATIVI && !ctx.annullato; t++) {
-      const esito = await tentaEstrazione(squadra, ctx);
-      rawItems = esito.items;
-      ultimoLoginWall = esito.loginWall;
+  if (rawItems.length === 0) return;
 
-      if (rawItems.length > 0) break;
-      if (!esito.loginWall && !esito.errore) break;
+  const dateStimate = new Map();
+  for (const item of rawItems) dateStimate.set(item.id, stimaDataVideo(item));
 
-      if (t < MAX_TENTATIVI) {
-        console.log(`🔁 [RETRY] ${squadra.nome}: ${esito.loginWall ? 'Facebook mostra il login' : 'errore'}, riprovo con un browser nuovo (tentativo ${t + 1}/${MAX_TENTATIVI}).`);
-        await sleep(8000 * t + Math.random() * 6000);
-      }
-    }
+  const conDurata = rawItems.filter((r) => r.durata).length;
+  const conData = rawItems.filter((r) => dateStimate.get(r.id)).length;
+  console.log(`🔍 [DEBUG] ${squadra.nome}: Trovati ${rawItems.length} elementi univoci (${conDurata} con durata, ${conData} con data).`);
 
-    if (ctx.annullato) return;
+  const avversariStessoGirone = squadra.girone
+    ? tutteLeSquadre.filter(s => s.girone === squadra.girone && s.id_squadra !== squadra.id_squadra)
+    : tutteLeSquadre.filter(s => s.id_squadra !== squadra.id_squadra);
 
-    if (rawItems.length === 0 && ultimoLoginWall) {
-      console.log(`🚧 [LOGIN WALL] ${squadra.nome}: Facebook ha reindirizzato al login anche dopo ${MAX_TENTATIVI} tentativi.`);
-    }
+  const partiteSquadra = tutteLePartite.filter(p => p.id_squadra_casa === squadra.id_squadra || p.id_squadra_ospite === squadra.id_squadra);
 
-    const conDurata = rawItems.filter((r) => r.durata).length;
-    const dateStimate = new Map();
-    for (const item of rawItems) dateStimate.set(item.id, stimaDataVideo(item));
-    const conData = rawItems.filter((r) => dateStimate.get(r.id)).length;
+  let scartatiData = 0;
+  let dataSconosciuta = 0;
+  let scartatiClassificazione = 0;
+  let scartatiPartita = 0;
 
-    console.log(`🔍 [DEBUG] ${squadra.nome}: Trovati ${rawItems.length} elementi univoci (${conDurata} con durata, ${conData} con data).`);
-
-    let campioni = 0;
-    for (const item of rawItems) {
-      if (!dateStimate.get(item.id) && campioni < 2) {
-        console.log(`🧪 [DATA?] ${squadra.nome}: data non leggibile. Righe brevi del contenitore:`, JSON.stringify((item.righe || []).slice(0, 10)));
-        campioni++;
-      }
-    }
-
-    const avversariStessoGirone = squadra.girone
-      ? tutteLeSquadre.filter(s => s.girone === squadra.girone && s.id_squadra !== squadra.id_squadra)
-      : tutteLeSquadre.filter(s => s.id_squadra !== squadra.id_squadra);
-
-    const partiteSquadra = tutteLePartite.filter(
-      p => p.id_squadra_casa === squadra.id_squadra || p.id_squadra_ospite === squadra.id_squadra
-    );
-
-    let scartatiData = 0;
-    let dataSconosciuta = 0;
-    let scartatiClassificazione = 0;
-    let scartatiPartita = 0;
-
-    for (const item of rawItems) {
-      const dataVideo = dateStimate.get(item.id) || null;
-      if (dataVideo) {
-        if (dataVideo.getTime() < DATA_MINIMA.getTime()) {
-          scartatiData++;
-          console.log(`     ⏭️ Scartato per data (${formattaData(dataVideo)}): ${item.url}`);
-          continue;
-        }
-      } else {
-        dataSconosciuta++;
-        if (SCARTA_SE_DATA_SCONOSCIUTA) {
-          console.log(`     ⏭️ Scartato (data non leggibile): ${item.url}`);
-          continue;
-        }
-      }
-
-      const categoriaTitolo = classificaTitoloVideo(item.fullText);
-      if (!categoriaTitolo) {
-        scartatiClassificazione++;
+  for (const item of rawItems) {
+    const dataVideo = dateStimate.get(item.id) || null;
+    if (dataVideo) {
+      if (dataVideo.getTime() < DATA_MINIMA.getTime()) {
+        scartatiData++;
         continue;
       }
+    } else {
+      dataSconosciuta++;
+      if (SCARTA_SE_DATA_SCONOSCIUTA) continue;
+    }
 
-      const testoLower = item.fullText.toLowerCase();
-      let partiteCandidate = [...partiteSquadra];
+    const categoriaTitolo = classificaTitoloVideo(item.fullText);
+    if (!categoriaTitolo) {
+      scartatiClassificazione++;
+      continue;
+    }
 
-      let avversarioTrovato = null;
-      for (const avversario of avversariStessoGirone) {
-        const nomeAvvLower = avversario.nome.toLowerCase();
-        const aliasList = NOMI_SQUADRE_MAP[nomeAvvLower] || [];
-        const paroleSignificative = nomeAvvLower.split(' ').filter(w => w.length > 3 && !['basket', 'pallacanestro', 'virtus', 'real'].includes(w));
+    const testoLower = item.fullText.toLowerCase();
+    let partiteCandidate = [...partiteSquadra];
+    let avversarioTrovato = null;
 
-        const terminiDaCercare = [nomeAvvLower, ...aliasList, ...paroleSignificative];
+    for (const avversario of avversariStessoGirone) {
+      const nomeAvvLower = avversario.nome.toLowerCase();
+      const aliasList = NOMI_SQUADRE_MAP[nomeAvvLower] || [];
+      const paroleSignificative = nomeAvvLower.split(' ').filter(w => w.length > 3 && !['basket', 'pallacanestro', 'virtus', 'real'].includes(w));
+      const terminiDaCercare = [nomeAvvLower, ...aliasList, ...paroleSignificative];
 
-        if (terminiDaCercare.some(termine => testoLower.includes(termine))) {
-          avversarioTrovato = avversario;
-          break;
-        }
-      }
-
-      if (avversarioTrovato) {
-        partiteCandidate = partiteCandidate.filter(
-          p => p.id_squadra_casa === avversarioTrovato.id_squadra || p.id_squadra_ospite === avversarioTrovato.id_squadra
-        );
-      }
-
-      if (partiteCandidate.length !== 1) {
-        const numeroGiornataEstratto = estraiNumeroGiornata(item.fullText);
-        if (numeroGiornataEstratto) {
-          const filtratePerGiornata = partiteCandidate.filter(
-            p => parseInt(p.id_giornata, 10) === numeroGiornataEstratto
-          );
-
-          if (filtratePerGiornata.length > 0) {
-            partiteCandidate = filtratePerGiornata;
-          }
-        }
-      }
-
-      let partitaScelta = null;
-
-      if (partiteCandidate.length === 1) {
-        partitaScelta = partiteCandidate[0];
-      } else if (partiteCandidate.length > 1) {
-        const dataPost = dataVideo || new Date();
-        partiteCandidate.sort((a, b) => {
-          return differenzaGiorni(dataPost, new Date(a.data_partita)) - differenzaGiorni(dataPost, new Date(b.data_partita));
-        });
-        partitaScelta = partiteCandidate[0];
-      }
-
-      if (!partitaScelta) {
-        scartatiPartita++;
-        continue;
-      }
-
-      const payloadUpsert = {
-        id_partita: partitaScelta.id_partita,
-        id_squadra_autore: squadra.id_squadra,
-        video_url: item.url,
-        titolo: categoriaTitolo,
-        piattaforma: 'facebook'
-      };
-
-      const secondi = durataInSecondi(item.durata);
-      if (secondi != null) {
-        payloadUpsert.durata_secondi = secondi;
-        if (SCRIVI_DURATA_FORMATTATA) {
-          payloadUpsert.durata_formattata = secondiInFormattata(secondi);
-        }
-      }
-
-      const { error: dbError } = await supabase.from('highlights_partite').upsert(
-        payloadUpsert,
-        { onConflict: 'video_url' }
-      );
-
-      if (dbError) {
-        console.error(`     ❌ Errore Supabase UPSERT:`, dbError.message);
-      } else {
-        console.log(`     🎉 SALVATAGGIO OK -> [${categoriaTitolo}] (Durata: ${item.durata || 'N/D'}${dataVideo ? ', Data: ' + formattaData(dataVideo) : ''}) Partita ID ${partitaScelta.id_partita}: ${item.url}`);
+      if (terminiDaCercare.some(termine => testoLower.includes(termine))) {
+        avversarioTrovato = avversario;
+        break;
       }
     }
 
-    if (rawItems.length > 0) {
-      console.log(`📊 [RIEPILOGO] ${squadra.nome}: ${scartatiData} scartati per data (prima del ${formattaData(DATA_MINIMA)}), ${scartatiClassificazione} dal classificatore, ${scartatiPartita} senza partita abbinata, ${dataSconosciuta} senza data leggibile${SCARTA_SE_DATA_SCONOSCIUTA ? ' (scartati)' : ' (salvati comunque)'}.`);
+    if (avversarioTrovato) {
+      partiteCandidate = partiteCandidate.filter(p => p.id_squadra_casa === avversarioTrovato.id_squadra || p.id_squadra_ospite === avversarioTrovato.id_squadra);
     }
-  } catch (err) {
-    console.error(`❌ [ERRORE CRITICO] Squadra ${squadra.nome}:`, err.message);
+
+    if (partiteCandidate.length !== 1) {
+      const numeroGiornataEstratto = estraiNumeroGiornata(item.fullText);
+      if (numeroGiornataEstratto) {
+        const filtratePerGiornata = partiteCandidate.filter(p => parseInt(p.id_giornata, 10) === numeroGiornataEstratto);
+        if (filtratePerGiornata.length > 0) partiteCandidate = filtratePerGiornata;
+      }
+    }
+
+    let partitaScelta = null;
+    if (partiteCandidate.length === 1) {
+      partitaScelta = partiteCandidate[0];
+    } else if (partiteCandidate.length > 1) {
+      const dataPost = dataVideo || new Date();
+      partiteCandidate.sort((a, b) => differenzaGiorni(dataPost, new Date(a.data_partita)) - differenzaGiorni(dataPost, new Date(b.data_partita)));
+      partitaScelta = partiteCandidate[0];
+    }
+
+    if (!partitaScelta) {
+      scartatiPartita++;
+      continue;
+    }
+
+    const payload = {
+      id_partita: partitaScelta.id_partita,
+      id_squadra_autore: squadra.id_squadra,
+      video_url: item.url,
+      titolo: categoriaTitolo,
+      piattaforma: 'facebook',
+      durata_secondi: durataInSecondi(item.durata)
+    };
+
+    const { error } = await supabase.from('highlights_partite').upsert(payload, { onConflict: 'video_url' });
+    if (!error) {
+      console.log(`🎉 [SALVATO] [${categoriaTitolo}] Squadra: ${squadra.nome} -> Partita ID ${partitaScelta.id_partita}`);
+    }
   }
+
+  console.log(`📊 [RIEPILOGO] ${squadra.nome}: ${scartatiData} scartati per data, ${scartatiClassificazione} dal classificatore, ${scartatiPartita} senza partita abbinata.`);
 }
 
 async function eseguiScrapingInBackground(offset, limit) {
   try {
-    const { data: tutteSquadre } = await supabase.from('squadre').select('id_squadra, nome, facebook_page_url, girone');
-    const { data: tutteLePartite } = await supabase.from('partite').select('id_partita, id_squadra_casa, id_squadra_ospite, data_partita, id_giornata');
+    console.log(`\n🔍 [SUPABASE] Interrogazione tabelle in corso...`);
+    const { data: tutteSquadre, error: errSquadre } = await supabase.from('squadre').select('id_squadra, nome, facebook_page_url, girone');
+    const { data: tutteLePartite, error: errPartite } = await supabase.from('partite').select('id_partita, id_squadra_casa, id_squadra_ospite, data_partita, id_giornata');
 
-    if (!tutteSquadre || !tutteLePartite) return;
+    if (errSquadre || errPartite) {
+      console.error(`❌ [SUPABASE ERRORE]:`, errSquadre?.message || errPartite?.message);
+      return;
+    }
+
+    if (!tutteSquadre || tutteSquadre.length === 0) return;
 
     const squadreSelezionate = tutteSquadre.slice(offset, offset + limit);
-
     let counter = offset;
+
     for (const squadra of squadreSelezionate) {
       counter++;
       if (!squadra.facebook_page_url) continue;
@@ -751,51 +489,149 @@ async function eseguiScrapingInBackground(offset, limit) {
       console.log(`========================================`);
 
       await pulisciChrome();
-
       const ctx = { browser: null, annullato: false };
       try {
         await withTimeout(scansionaSquadra(squadra, tutteSquadre, tutteLePartite, ctx), TIMEOUT_SQUADRA_MS);
       } catch (err) {
-        ctx.annullato = true;
         console.error(`⚠️ Salto ${squadra.nome}: ${err.message}`);
       } finally {
         await killBrowser(ctx.browser);
-        ctx.browser = null;
       }
-
+      
+      // Pausa sicura e rilassata per proteggere l'IP
       await sleep(PAUSA_TRA_SQUADRE_MIN_MS + Math.random() * PAUSA_TRA_SQUADRE_RANDOM_MS);
-      if (global.gc) global.gc();
     }
-
-    console.log(`\n🎉 Scraping completato per il blocco ${offset} - ${offset + squadreSelezionate.length}!`);
+    console.log(`\n🎉 Blocco ${offset} - ${offset + squadreSelezionate.length} completato!`);
   } catch (err) {
-    console.error('Errore durante lo scraping in background:', err);
+    console.error('❌ Errore generale nello scraping:', err);
   } finally {
     isScrapingRunning = false;
   }
 }
 
+// ===================== INTERFACCIA HTML / DASHBOARD =====================
+app.get('/', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="it">
+    <head>
+      <meta charset="UTF-8">
+      <title>Dashboard Facebook Scraper</title>
+      <style>
+        body { font-family: Arial, sans-serif; background: #f4f6f9; margin: 0; padding: 20px; color: #333; }
+        .container { max-width: 900px; margin: auto; background: white; padding: 25px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        h1 { color: #1877f2; margin-top: 0; }
+        .buttons { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
+        button { padding: 10px 18px; background: #1877f2; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; font-weight: bold; }
+        button:hover { background: #145dbf; }
+        button.stop { background: #e4405f; }
+        button.stop:hover { background: #b02a43; }
+        button.action-btn { background: #28a745; }
+        button.action-btn:hover { background: #218838; }
+        .log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .log-header h3 { margin: 0; }
+        #log-box { background: #1e1e1e; color: #00ff66; padding: 15px; border-radius: 5px; height: 400px; overflow-y: auto; font-family: monospace; font-size: 13px; white-space: pre-wrap; }
+        .status { margin-bottom: 15px; font-weight: bold; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>🏀 Facebook Scraper Dashboard</h1>
+        <div class="status" id="status-text">Stato: Pronto</div>
+        
+        <p>Scegli il blocco di squadre da scansionare:</p>
+        <div class="buttons">
+          <button onclick="avviaScraping(0, 15)">Blocco 1 (0 - 15)</button>
+          <button onclick="avviaScraping(15, 15)">Blocco 2 (15 - 30)</button>
+          <button onclick="avviaScraping(30, 15)">Blocco 3 (30 - 45)</button>
+          <button onclick="avviaScraping(45, 15)">Blocco 4 (45 - 56)</button>
+          <button class="stop" onclick="resetLock()">Ferma / Sblocca</button>
+        </div>
+
+        <div class="log-header">
+          <h3>Log in tempo reale:</h3>
+          <div>
+            <button class="action-btn" onclick="copiaLog()">📋 Copia Log</button>
+            <button class="action-btn" id="toggle-scroll-btn" onclick="toggleAutoScroll()">🔒 Auto-scroll: ON</button>
+          </div>
+        </div>
+
+        <div id="log-box">Caricamento log...</div>
+      </div>
+
+      <script>
+        let autoScrollEnabled = true;
+
+        function avviaScraping(offset, limit) {
+          fetch('/scrape?offset=' + offset + '&limit=' + limit)
+            .then(res => res.json())
+            .then(data => { if (data.error) console.error(data.error); })
+            .catch(err => console.error("Errore di connessione"));
+        }
+
+        function resetLock() {
+          fetch('/reset-lock')
+            .then(res => res.json())
+            .then(data => console.log(data.message));
+        }
+
+        function copiaLog() {
+          const box = document.getElementById('log-box');
+          navigator.clipboard.writeText(box.textContent).then(() => {
+            alert("✅ Log copiati negli appunti!");
+          }).catch(err => {
+            alert("Errore durante la copia dei log");
+          });
+        }
+
+        function toggleAutoScroll() {
+          autoScrollEnabled = !autoScrollEnabled;
+          const btn = document.getElementById('toggle-scroll-btn');
+          if (autoScrollEnabled) {
+            btn.textContent = "🔒 Auto-scroll: ON";
+            btn.style.background = "#28a745";
+          } else {
+            btn.textContent = "🔓 Auto-scroll: OFF";
+            btn.style.background = "#6c757d";
+          }
+        }
+
+        setInterval(() => {
+          fetch('/logs')
+            .then(res => res.json())
+            .then(data => {
+              const box = document.getElementById('log-box');
+              box.textContent = data.logs.join('\\n');
+              if (autoScrollEnabled) {
+                box.scrollTop = box.scrollHeight;
+              }
+              document.getElementById('status-text').textContent = "Stato: " + (data.isRunning ? "🟡 In esecuzione..." : "🟢 Pronto");
+            });
+        }, 1500);
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+app.get('/logs', (req, res) => {
+  res.json({ logs: logBuffer, isRunning: isScrapingRunning });
+});
+
 app.get('/scrape', (req, res) => {
   if (isScrapingRunning) {
     return res.status(429).json({ message: "Un processo di scraping è già in esecuzione!" });
   }
-
   const offset = parseInt(req.query.offset) || 0;
   const limit = parseInt(req.query.limit) || 15;
-
   isScrapingRunning = true;
-
-  res.json({
-    status: "ok",
-    message: `Scraping avviato in background per il blocco ${offset} - ${offset + limit}.`
-  });
-
+  res.json({ status: "ok", message: `Scraping avviato per il blocco ${offset}-${offset + limit}.` });
   eseguiScrapingInBackground(offset, limit);
 });
 
 app.get('/reset-lock', (req, res) => {
   isScrapingRunning = false;
-  res.json({ message: "Lock dello scraping resettato con successo!" });
+  res.json({ message: "Lock dello scraper resettato con successo!" });
 });
 
 const PORT = process.env.PORT || 10000;
