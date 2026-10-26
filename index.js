@@ -66,7 +66,14 @@ const NOMI_SQUADRE_MAP = {
   'luiss roma': ['luiss', 'luiss roma'],
   'cestistica san severo': ['san severo', 'sansevero', 'cestistica san severo'],
   'faenza': ['faenza', 'raggisolaris', 'tema sinergie'],
-  'siena': ['siena', 'mens sana']
+  'siena': ['siena', 'mens sana'],
+  'ltc group sangiorgese basket': ['sangiorgese'],
+  'ucc assigeco piacenza': ['assigeco'],
+  'myenergy reggio calabria': ['reggio calabria', 'viola reggio'],
+  'felice scandone avellino': ['scandone', 'scandone avellino'],
+  'halley campania avellino basket': ['avellino basket'],
+  'basketball club lucca': ['basketball lucca', 'bc lucca'],
+  'consultinvest loreto pesaro': ['loreto pesaro', 'loreto']
 };
 
 let isScrapingRunning = false;
@@ -110,6 +117,7 @@ function classificaTitoloVideo(testo) {
     t.includes('al termine della') || t.includes('al termine del') ||
     t.includes('al termine di') || t.includes('commenta la vittoria') ||
     t.includes('commenta la sconfitta') || t.includes('dichiarazioni a caldo') ||
+    t.includes('intervista') || t.includes('le parole di') ||
     (t.includes('conferenza') && !t.includes('roster') && !t.includes('sponsor')) ||
     (t.includes('sala stampa') && !t.includes('presentazione roster') && !t.includes('presentazione gara'))
   ) {
