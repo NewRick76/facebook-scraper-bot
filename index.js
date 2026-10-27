@@ -62,7 +62,7 @@ const NOMI_SQUADRE_MAP = {
   'agrigento': ['agrigento', 'moncada'],
   'omegna': ['omegna', 'fulgor', 'paffoni'],
   'imola': ['imola', 'andrea costa'],
-  'virtus gvm roma 1960': ['virtus roma', 'roma 1960', 'virtus gvm'],
+  'virtus gvm roma 1960': ['virtus roma', 'roma 1960', 'virtus gvm', 'villa', 'visintin'],
   'luiss roma': ['luiss', 'luiss roma'],
   'cestistica san severo': ['san severo', 'sansevero', 'cestistica san severo'],
   'faenza': ['faenza', 'raggisolaris', 'tema sinergie'],
@@ -118,6 +118,8 @@ function classificaTitoloVideo(testo) {
     t.includes('al termine di') || t.includes('commenta la vittoria') ||
     t.includes('commenta la sconfitta') || t.includes('dichiarazioni a caldo') ||
     t.includes('intervista') || t.includes('le parole di') ||
+    t.includes('al termine della partita') || t.includes('dopo la partita') ||
+    t.includes('al termine del match') || t.includes('dopo il match') ||
     (t.includes('conferenza') && !t.includes('roster') && !t.includes('sponsor')) ||
     (t.includes('sala stampa') && !t.includes('presentazione roster') && !t.includes('presentazione gara'))
   ) {
@@ -304,7 +306,9 @@ async function estraiVideo(page) {
     const videoLinks = [];
     document.querySelectorAll('a').forEach((a) => {
       const href = a.href || '';
-      if ((href.includes('/videos/') || href.includes('/watch') || href.includes('/reel/')) && href !== 'https://www.facebook.com/watch/') {
+      if ((href.includes('/videos/') || href.includes('/watch') || href.includes('/reel/')) && 
+          !href.includes('facebook.com/watch/') && 
+          !href.includes('facebook.com/reels/')) {
         videoLinks.push({ el: a, url: href.split('?')[0], id: idDa(href) });
       }
     });
@@ -317,19 +321,28 @@ async function estraiVideo(page) {
       if (matchLink && regexDurata.test(matchLink[1])) durata = matchLink[1];
 
       let container = link.el;
-      let radice = null;
-      for (let i = 0; i < 5 && container; i++) {
-        radice = container;
-        container = container.parentElement;
+      let article = link.el.closest('div[role="article"]');
+
+      if (!article) {
+        for (let i = 0; i < 8 && container; i++) {
+          if (container.tagName === 'DIV' && container.innerText && container.innerText.length > 30) {
+            article = container;
+            break;
+          }
+          container = container.parentElement;
+        }
       }
 
-      const article = link.el.closest('div[role="article"]') || radice;
-      const parentText = article?.innerText || link.el.innerText || '';
+      let parentText = article ? article.innerText : (link.el.innerText || '');
+      parentText = parentText
+        .replace(/Home|In diretta|Reels|Programmi|Esplora|Privacy|Condizioni|Pubblicità|Scegli/gi, '')
+        .trim();
+
       const timeEl = article?.querySelector('time[datetime]');
       const postDate = timeEl ? toIso(timeEl.getAttribute('datetime')) : null;
-      const righe = (article?.innerText || '').split('\n').map(s => s.trim()).filter(s => s && s.length <= 60).slice(0, 25);
+      const righe = parentText.split('\n').map(s => s.trim()).filter(s => s && s.length <= 80).slice(0, 25);
 
-      if (!mappa.has(link.id)) {
+      if (!mappa.has(link.id) && parentText.length > 5) {
         mappa.set(link.id, { id: link.id, url: link.url, fullText: parentText, durata, postDate, righe });
       }
     }
