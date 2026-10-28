@@ -530,6 +530,63 @@ async function eseguiScrapingInBackground(offset, limit) {
   }
 }
 
+// ===================== ENDPOINT DEDICATI AI CRON JOB =====================
+app.get('/cron/blocco1', async (req, res) => {
+  if (isScrapingRunning) return res.status(429).json({ error: "Già in esecuzione" });
+  isScrapingRunning = true;
+  res.json({ status: "ok", message: "Avviato blocco 1 (Squadre 1-7)" });
+  await eseguiScrapingInBackground(0, 7);
+});
+
+app.get('/cron/blocco2', async (req, res) => {
+  if (isScrapingRunning) return res.status(429).json({ error: "Già in esecuzione" });
+  isScrapingRunning = true;
+  res.json({ status: "ok", message: "Avviato blocco 2 (Squadre 8-14)" });
+  await eseguiScrapingInBackground(7, 7);
+});
+
+app.get('/cron/blocco3', async (req, res) => {
+  if (isScrapingRunning) return res.status(429).json({ error: "Già in esecuzione" });
+  isScrapingRunning = true;
+  res.json({ status: "ok", message: "Avviato blocco 3 (Squadre 15-21)" });
+  await eseguiScrapingInBackground(14, 7);
+});
+
+app.get('/cron/blocco4', async (req, res) => {
+  if (isScrapingRunning) return res.status(429).json({ error: "Già in esecuzione" });
+  isScrapingRunning = true;
+  res.json({ status: "ok", message: "Avviato blocco 4 (Squadre 22-28)" });
+  await eseguiScrapingInBackground(21, 7);
+});
+
+app.get('/cron/blocco5', async (req, res) => {
+  if (isScrapingRunning) return res.status(429).json({ error: "Già in esecuzione" });
+  isScrapingRunning = true;
+  res.json({ status: "ok", message: "Avviato blocco 5 (Squadre 29-35)" });
+  await eseguiScrapingInBackground(28, 7);
+});
+
+app.get('/cron/blocco6', async (req, res) => {
+  if (isScrapingRunning) return res.status(429).json({ error: "Già in esecuzione" });
+  isScrapingRunning = true;
+  res.json({ status: "ok", message: "Avviato blocco 6 (Squadre 36-42)" });
+  await eseguiScrapingInBackground(35, 7);
+});
+
+app.get('/cron/blocco7', async (req, res) => {
+  if (isScrapingRunning) return res.status(429).json({ error: "Già in esecuzione" });
+  isScrapingRunning = true;
+  res.json({ status: "ok", message: "Avviato blocco 7 (Squadre 43-49)" });
+  await eseguiScrapingInBackground(42, 7);
+});
+
+app.get('/cron/blocco8', async (req, res) => {
+  if (isScrapingRunning) return res.status(429).json({ error: "Già in esecuzione" });
+  isScrapingRunning = true;
+  res.json({ status: "ok", message: "Avviato blocco 8 (Squadre 50-56)" });
+  await eseguiScrapingInBackground(49, 7);
+});
+
 // ===================== INTERFACCIA HTML / DASHBOARD =====================
 app.get('/', (req, res) => {
   res.send(`
