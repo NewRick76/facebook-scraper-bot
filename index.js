@@ -350,7 +350,6 @@ async function estraiVideo(page) {
   }), 15000);
 }
 
-// 1 TENTATIVO UNICO OTTIMIZZATO (Niente retry aggressivi che fanno scattare il ban IP)
 async function tentaEstrazioneSingola(squadra, ctx) {
   const browser = await apriBrowser(ctx);
   try {
@@ -519,7 +518,6 @@ async function eseguiScrapingInBackground(offset, limit) {
         await killBrowser(ctx.browser);
       }
       
-      // Pausa sicura e rilassata per proteggere l'IP
       await sleep(PAUSA_TRA_SQUADRE_MIN_MS + Math.random() * PAUSA_TRA_SQUADRE_RANDOM_MS);
     }
     console.log(`\n🎉 Blocco ${offset} - ${offset + squadreSelezionate.length} completato!`);
@@ -529,6 +527,19 @@ async function eseguiScrapingInBackground(offset, limit) {
     isScrapingRunning = false;
   }
 }
+
+// ===================== ENDPOINT HEALTHCHECK & WARM-UP =====================
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'healthy', 
+    timestamp: new Date().toISOString(),
+    isRunning: isScrapingRunning 
+  });
+});
+
+app.get('/ping-status', (req, res) => {
+  res.status(200).send('Pong! Server attivo e sveglio.');
+});
 
 // ===================== ENDPOINT DEDICATI AI CRON JOB =====================
 app.get('/cron/blocco1', async (req, res) => {
