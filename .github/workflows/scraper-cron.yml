@@ -1,54 +1,49 @@
-name: Trigger Render Scraper
+name: Trigger Render Scraper (Scaglionato)
 
 on:
   schedule:
-    - cron: '0 6,8,10,12,14,16,18,20 * * *'
+    # 05:00 UTC = 06:00 Italiane (Ora Solare) / 07:00 (Ora Legale)
+    - cron: '0 5 * * *'   # Blocco 1 (06:00)
+    - cron: '0 7 * * *'   # Blocco 2 (08:00)
+    - cron: '0 9 * * *'   # Blocco 3 (10:00)
+    - cron: '0 11 * * *'  # Blocco 4 (12:00)
+    - cron: '0 13 * * *'  # Blocco 5 (14:00)
+    - cron: '0 15 * * *'  # Blocco 6 (16:00)
+    - cron: '0 17 * * *'  # Blocco 7 (18:00)
+    - cron: '0 19 * * *'  # Blocco 8 (20:00)
 
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
     steps:
-      - name: Esegui Blocco 1
+      - name: Esegui Blocco 1 (06:00)
+        if: github.event.schedule == '0 5 * * *'
         run: curl -s "https://facebook-scraper-bot-docker.onrender.com/cron/blocco1"
-        
-      - name: Attendi 3 minuti
-        run: sleep 180
 
-      - name: Esegui Blocco 2
+      - name: Esegui Blocco 2 (08:00)
+        if: github.event.schedule == '0 7 * * *'
         run: curl -s "https://facebook-scraper-bot-docker.onrender.com/cron/blocco2"
 
-      - name: Attendi 3 minuti
-        run: sleep 180
-
-      - name: Esegui Blocco 3
+      - name: Esegui Blocco 3 (10:00)
+        if: github.event.schedule == '0 9 * * *'
         run: curl -s "https://facebook-scraper-bot-docker.onrender.com/cron/blocco3"
 
-      - name: Attendi 3 minuti
-        run: sleep 180
-
-      - name: Esegui Blocco 4
+      - name: Esegui Blocco 4 (12:00)
+        if: github.event.schedule == '0 11 * * *'
         run: curl -s "https://facebook-scraper-bot-docker.onrender.com/cron/blocco4"
 
-      - name: Attendi 3 minuti
-        run: sleep 180
-
-      - name: Esegui Blocco 5
+      - name: Esegui Blocco 5 (14:00)
+        if: github.event.schedule == '0 13 * * *'
         run: curl -s "https://facebook-scraper-bot-docker.onrender.com/cron/blocco5"
 
-      - name: Attendi 3 minuti
-        run: sleep 180
-
-      - name: Esegui Blocco 6
+      - name: Esegui Blocco 6 (16:00)
+        if: github.event.schedule == '0 15 * * *'
         run: curl -s "https://facebook-scraper-bot-docker.onrender.com/cron/blocco6"
 
-      - name: Attendi 3 minuti
-        run: sleep 180
-
-      - name: Esegui Blocco 7
+      - name: Esegui Blocco 7 (18:00)
+        if: github.event.schedule == '0 17 * * *'
         run: curl -s "https://facebook-scraper-bot-docker.onrender.com/cron/blocco7"
 
-      - name: Attendi 3 minuti
-        run: sleep 180
-
-      - name: Esegui Blocco 8
+      - name: Esegui Blocco 8 (20:00)
+        if: github.event.schedule == '0 19 * * *'
         run: curl -s "https://facebook-scraper-bot-docker.onrender.com/cron/blocco8"
