@@ -1,0 +1,54 @@
+name: Trigger Render Scraper
+
+on:
+  schedule:
+    - cron: '0 6,8,10,12,14,16,18,20 * * *'
+
+jobs:
+  run-scraper:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Esegui Blocco 1
+        run: curl -s "https://facebook-scraper-bot-docker.onrender.com/cron/blocco1"
+        
+      - name: Attendi 3 minuti
+        run: sleep 180
+
+      - name: Esegui Blocco 2
+        run: curl -s "https://facebook-scraper-bot-docker.onrender.com/cron/blocco2"
+
+      - name: Attendi 3 minuti
+        run: sleep 180
+
+      - name: Esegui Blocco 3
+        run: curl -s "https://facebook-scraper-bot-docker.onrender.com/cron/blocco3"
+
+      - name: Attendi 3 minuti
+        run: sleep 180
+
+      - name: Esegui Blocco 4
+        run: curl -s "https://facebook-scraper-bot-docker.onrender.com/cron/blocco4"
+
+      - name: Attendi 3 minuti
+        run: sleep 180
+
+      - name: Esegui Blocco 5
+        run: curl -s "https://facebook-scraper-bot-docker.onrender.com/cron/blocco5"
+
+      - name: Attendi 3 minuti
+        run: sleep 180
+
+      - name: Esegui Blocco 6
+        run: curl -s "https://facebook-scraper-bot-docker.onrender.com/cron/blocco6"
+
+      - name: Attendi 3 minuti
+        run: sleep 180
+
+      - name: Esegui Blocco 7
+        run: curl -s "https://facebook-scraper-bot-docker.onrender.com/cron/blocco7"
+
+      - name: Attendi 3 minuti
+        run: sleep 180
+
+      - name: Esegui Blocco 8
+        run: curl -s "https://facebook-scraper-bot-docker.onrender.com/cron/blocco8"
